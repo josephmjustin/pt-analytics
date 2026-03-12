@@ -47,7 +47,7 @@ class RouteStopDwell(BaseModel):
     day_of_week: int
     hour_of_day: int
     avg_dwell_seconds: float
-    stddev_dwell_seconds: float
+    stddev_dwell_seconds: float | None = None
     sample_count: int
 
 class DwellPattern(BaseModel):
