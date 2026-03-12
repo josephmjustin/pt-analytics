@@ -30,7 +30,7 @@ async def get_live_vehicles(
     request: Request,
     search: str | None = Query(
         None,
-        description="Search vehicles by operator, case-insensitive"
+        description="Search vehicles by operator code (eg. AMSY for Arriva Merseyside, SCMY for StageCoach Merseyside,...), case-insensitive"
     ),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
@@ -55,7 +55,14 @@ async def get_live_vehicles(
         where += " AND LOWER(operator) LIKE LOWER($" + str(len(params) + 1) + ")"
         params.append(f"%{search}%")
 
-    total = await conn.fetchval(f"SELECT COUNT(*) FROM vehicle_positions {where}", *params)
+    total = await conn.fetchval(f"""
+        SELECT COUNT(*) FROM (
+            SELECT DISTINCT ON (vehicle_id) vehicle_id
+            FROM vehicle_positions
+            {where}
+            ORDER BY vehicle_id, timestamp DESC
+        ) sub
+    """, *params[:-2])
 
     query = f"""
         SELECT DISTINCT ON (vehicle_id)
