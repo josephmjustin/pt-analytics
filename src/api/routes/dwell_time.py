@@ -199,7 +199,7 @@ async def get_route_stops_dwell(
     route_name: str,
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    direction: str | None = Query(None, description="Filter by direction (Outbound or Inbound)"),
+    direction: str | None = Query(None, description="Filter by direction, lowercase (outbound/ inbound)"),
     operator: str | None = Query(None, description="Filter by operator, case sensitive, should match exactly (eg. Arriva, Stagecoach, ...)"),
     day_of_week: int | None = Query(None, ge=0, le=6, description="Filter by day of week (0=Monday, 6=Sunday)"),
     hour_of_day: int | None = Query(None, ge=0, le=23, description="Filter by hour of day (0-23)"),
