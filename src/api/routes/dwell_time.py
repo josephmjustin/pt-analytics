@@ -129,7 +129,7 @@ async def get_dwell_time_stats(conn=Depends(get_db)):
     
     return DwellTimeStats(**dict(stats))
 
-@router.get("/filters", response_model=FilterOptions, include_in_schema=False)
+@router.get("/filters", response_model=FilterOptions)
 async def get_filter_options(conn=Depends(get_db)):
     """Get available filter options for dropdowns"""
     # Get unique operators
@@ -340,8 +340,8 @@ async def get_high_demand_stops(
 @router.get("/heatmap", response_model=HeatmapData)
 async def get_dwell_time_heatmap(
     route_name: str,
-    direction: str | None = Query(None),
-    operator: str | None = Query(None),
+    direction: str | None = Query(None, description="Filter by direction, lowercase (outbound/ inbound)"),
+    operator: str | None = Query(None, description="Full operator name as returned by /dwell-time/filters endpoint (e.g., 'Arriva Merseyside', not 'Arriva')"),
     conn=Depends(get_db)
 ):
     """Get heatmap data: stops × hours with dwell times"""
