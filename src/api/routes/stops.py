@@ -36,7 +36,7 @@ async def get_all_stops(
     request: Request,
     search: str | None = Query(
         None,
-        description="Search stop by name, not case-insensitive",
+        description="Search stop by name, case-insensitive",
     ),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
