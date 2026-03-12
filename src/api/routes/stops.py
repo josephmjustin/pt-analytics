@@ -34,7 +34,10 @@ router = APIRouter(prefix="/stops", tags=["stops"])
 @router.get("/", response_model=PaginatedStops)
 async def get_all_stops(
     request: Request,
-    search: str | None = None,
+    search: str | None = Query(
+        None,
+        description="Search stop by name, not case-insensitive",
+    ),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     conn=Depends(get_db)
