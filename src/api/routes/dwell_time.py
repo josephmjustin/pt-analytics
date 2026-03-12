@@ -225,6 +225,8 @@ async def get_route_stops_dwell(
     if hour_of_day is not None:
         where += " AND hour_of_day = $" + str(len(params) + 1)
         params.append(hour_of_day)
+    
+    total = await conn.fetchval(f"SELECT COUNT(*) FROM dwell_time_analysis dta JOIN txc_stops ts ON dta.naptan_id = ts.naptan_id {where}", *params)
 
     query = f"""
         SELECT 
@@ -247,7 +249,6 @@ async def get_route_stops_dwell(
     """
     
     params.extend([limit, offset])
-    total = await conn.fetchval(f"SELECT COUNT(*) FROM dwell_time_analysis dta JOIN txc_stops ts ON dta.naptan_id = ts.naptan_id {where}", *params[:-2])
     stops = await conn.fetch(query, *params)
     data = [RouteStopDwell(**dict(stop)) for stop in stops]
     next_url = f"/dwell-time/route/{route_name}/stops?limit={limit}&offset={offset + limit}" if offset + limit < total else None
