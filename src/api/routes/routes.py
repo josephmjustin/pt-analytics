@@ -34,9 +34,10 @@ class RouteStops(BaseModel):
 
 class RouteDetails(BaseModel):
     route_name: str
+    variant_count: int
     variants: list[RouteVariants]
     stops_in_sequence: list[RouteStops]
-    variant_count: int
+    
 
 router = APIRouter(prefix="/routes", tags=["routes"])
 
@@ -121,9 +122,9 @@ async def get_route_details(route_name: str, conn=Depends(get_db)):
 
     return RouteDetails(
         route_name=route_name,
+        variant_count=len(variants),
         variants=variants,
-        stops_in_sequence=example_stops,
-        variant_count=len(variants)
+        stops_in_sequence=example_stops        
     )
 
 
