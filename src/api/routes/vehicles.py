@@ -62,7 +62,7 @@ async def get_live_vehicles(
             {where}
             ORDER BY vehicle_id, timestamp DESC
         ) sub
-    """, *params[:-2])
+    """, *params)
 
     query = f"""
         SELECT DISTINCT ON (vehicle_id)
