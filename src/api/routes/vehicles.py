@@ -28,7 +28,10 @@ router = APIRouter(prefix="/vehicles", tags=["vehicles"])
 @router.get("/live", response_model = PaginatedVehicles)
 async def get_live_vehicles(
     request: Request,
-    search: str | None = None,
+    search: str | None = Query(
+        None,
+        description="Search vehicles by operator, case-insensitive"
+    ),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     conn=Depends(get_db)
