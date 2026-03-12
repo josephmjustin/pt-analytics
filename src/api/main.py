@@ -1,21 +1,15 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from src.api.routes import stops, vehicles, routes, test_txc, dwell_time
+from src.api.routes import stops, vehicles, routes, dwell_time
+from src.api.database import create_pool, close_pool
 
 # Lifespan context manager for startup/shutdown
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    import sys
-    sys.stdout.flush()
-    print("="*80, flush=True)
-    print("PASSSENGER ACTIVITY ANALYTICS API STARTED", flush=True)
-    print("Dwell Time Analysis API - Passenger Activity", flush=True)
-    print("="*80, flush=True)
+    await create_pool()
     yield
-    # Shutdown
-    print("Shutting down...", flush=True)
+    await close_pool()
 
 app = FastAPI(title="Passenger Activity Analytics API", version="1.0.0", lifespan=lifespan)
 
@@ -40,7 +34,6 @@ app.add_middleware(
 app.include_router(stops.router)
 app.include_router(vehicles.router)
 app.include_router(routes.router)
-# app.include_router(test_txc.router)
 app.include_router(dwell_time.router)
 
 @app.get("/")
