@@ -154,12 +154,22 @@ async def get_filter_options(conn=Depends(get_db)):
 @router.get("/routes", response_model=PaginatedDwellRoutes)
 async def get_routes_with_dwell_data(
     request: Request,
+    search: str | None = Query(
+        None,
+        description="Search routes by name, case-insensitive"
+    ),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     conn=Depends(get_db)
 ):
     """Get all routes with dwell time data available"""
-    query = """
+    params = []
+    where = "WHERE route_name IS NOT NULL"
+    if search:
+        where += " AND LOWER(route_name) LIKE LOWER($" + str(len(params) + 1) + ")"
+        params.append(search)
+
+    query = f"""
         SELECT 
             route_name,
             COUNT(DISTINCT naptan_id) as stops_with_data,
@@ -167,12 +177,14 @@ async def get_routes_with_dwell_data(
             SUM(sample_count) as total_samples,
             ROUND(AVG(avg_dwell_seconds)::numeric, 1) as avg_dwell
         FROM dwell_time_analysis
+        {where}
         GROUP BY route_name
         ORDER BY route_name
-        LIMIT $1 OFFSET $2
+        LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}
     """
-    routes = await conn.fetch(query, limit, offset)
-    total = await conn.fetchval("SELECT COUNT(DISTINCT route_name) FROM dwell_time_analysis")
+    params.extend([limit, offset])
+    routes = await conn.fetch(query, *params)
+    total = await conn.fetchval(f"SELECT COUNT(DISTINCT route_name) FROM dwell_time_analysis {where}", *params[:-2])
 
     base = str(request.base_url).rstrip("/")
     next_url = f"{base}/dwell-time/routes?limit={limit}&offset={offset + limit}" if offset + limit < total else None
