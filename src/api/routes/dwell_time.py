@@ -3,9 +3,13 @@ Dwell Time Analysis API Endpoints
 Provides demand proxy insights based on dwell time patterns
 """
 from fastapi import APIRouter, HTTPException, Query, Depends, Request
-from src.api.database import get_db
 from pydantic import BaseModel
 from typing import Generic, TypeVar, Optional, List
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from src.api.database import get_db
+from src.api.auth import verify_api_key
+from src.api.rate_limiter import limiter
 
 T = TypeVar('T')
 
@@ -151,7 +155,7 @@ async def get_filter_options(conn=Depends(get_db)):
     
     return FilterOptions(operators=operators, directions=directions)
 
-@router.get("/routes", response_model=PaginatedDwellRoutes)
+@router.get("/routes", response_model=PaginatedDwellRoutes, dependencies=[Depends(verify_api_key)])
 async def get_routes_with_dwell_data(
     request: Request,
     search: str | None = Query(
@@ -194,7 +198,7 @@ async def get_routes_with_dwell_data(
 
     return PaginatedDwellRoutes(total=total, limit=limit, offset=offset, next=next_url, prev=prev_url, data=data)
 
-@router.get("/route/{route_name}/stops", response_model=PaginatedRouteStopDwell)
+@router.get("/route/{route_name}/stops", response_model=PaginatedRouteStopDwell, dependencies=[Depends(verify_api_key)])
 async def get_route_stops_dwell(
     route_name: str,
     limit: int = Query(100, ge=1, le=500),
@@ -256,7 +260,7 @@ async def get_route_stops_dwell(
 
     return PaginatedRouteStopDwell(total=total, limit=limit, offset=offset, next=next_url, prev=prev_url, data=data)
 
-@router.get("/stop/{naptan_id}/pattern", response_model=StopDwellPattern)
+@router.get("/stop/{naptan_id}/pattern", response_model=StopDwellPattern, dependencies=[Depends(verify_api_key)])
 async def get_stop_dwell_pattern(
     naptan_id: str,
     route_name: str | None = Query(None),
@@ -306,7 +310,9 @@ async def get_stop_dwell_pattern(
     )
 
 @router.get("/hotspots", response_model=Hotspots)
+@limiter.limit("5/minute")
 async def get_high_demand_stops(
+    request: Request,
     min_samples: int | None = Query(10, ge=1),
     limit: int | None = Query(20, ge=1, le=100),
     conn=Depends(get_db)
@@ -337,7 +343,7 @@ async def get_high_demand_stops(
         count=len(hotspots)
     )
 
-@router.get("/heatmap", response_model=HeatmapData)
+@router.get("/heatmap", response_model=HeatmapData, dependencies=[Depends(verify_api_key)])
 async def get_dwell_time_heatmap(
     route_name: str,
     direction: str | None = Query(None, description="Filter by direction, lowercase (outbound/ inbound)"),

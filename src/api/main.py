@@ -1,8 +1,13 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from src.api.routes import stops, vehicles, routes, dwell_time
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.errors import RateLimitExceeded
+from src.api.routes import stops, vehicles, routes, dwell_time, admin
 from src.api.database import create_pool, close_pool
+from src.api.middleware import log_requests, global_exception_handler
 
 # Lifespan context manager for startup/shutdown
 @asynccontextmanager
@@ -11,7 +16,18 @@ async def lifespan(app: FastAPI):
     yield
     await close_pool()
 
+limiter = Limiter(
+    key_func=get_remote_address,
+    default_limits=["30/minute"]
+)
+
 app = FastAPI(title="Passenger Activity Analytics API", version="1.0.0", lifespan=lifespan)
+app.state.limiter = limiter
+app.add_middleware(SlowAPIMiddleware)
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+app.middleware("http")(log_requests)
+app.exception_handler(Exception)(global_exception_handler)
 
 # CORS for frontend
 app.add_middleware(
@@ -35,6 +51,7 @@ app.include_router(stops.router)
 app.include_router(vehicles.router)
 app.include_router(routes.router)
 app.include_router(dwell_time.router)
+app.include_router(admin.router)
 
 @app.get("/")
 def root():

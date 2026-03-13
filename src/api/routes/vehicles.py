@@ -2,6 +2,7 @@ from fastapi import APIRouter, Query, Depends, Request
 from src.api.database import get_db
 from pydantic import BaseModel
 from datetime import datetime, timedelta
+from src.api.auth import verify_api_key
 
 class VehicleDetails(BaseModel):
     vehicle_id: str
@@ -25,7 +26,7 @@ class PaginatedVehicles(BaseModel):
 
 router = APIRouter(prefix="/vehicles", tags=["vehicles"])
 
-@router.get("/live", response_model = PaginatedVehicles)
+@router.get("/live", response_model = PaginatedVehicles, dependencies=[Depends(verify_api_key)])
 async def get_live_vehicles(
     request: Request,
     search: str | None = Query(

@@ -2,8 +2,8 @@
 Route information endpoints (TXC data only)
 """
 from fastapi import APIRouter, HTTPException, Query, Depends, Request
-from src.api.database import get_db
 from pydantic import BaseModel
+from src.api.database import get_db
 
 class Route(BaseModel):
     route_name: str
@@ -38,7 +38,6 @@ class RouteDetails(BaseModel):
     variants: list[RouteVariants]
     stops_in_sequence: list[RouteStops]
     
-
 router = APIRouter(prefix="/routes", tags=["routes"])
 
 @router.get("/", response_model = PaginatedRoutes)
