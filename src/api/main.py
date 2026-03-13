@@ -8,6 +8,7 @@ from slowapi.errors import RateLimitExceeded
 from src.api.routes import stops, vehicles, routes, dwell_time, admin
 from src.api.database import create_pool, close_pool
 from src.api.middleware import log_requests, global_exception_handler
+from .rate_limiter import limiter
 
 # Lifespan context manager for startup/shutdown
 @asynccontextmanager
@@ -15,11 +16,6 @@ async def lifespan(app: FastAPI):
     await create_pool()
     yield
     await close_pool()
-
-limiter = Limiter(
-    key_func=get_remote_address,
-    default_limits=["30/minute"]
-)
 
 app = FastAPI(title="Passenger Activity Analytics API", version="1.0.0", lifespan=lifespan)
 app.state.limiter = limiter
