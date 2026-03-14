@@ -17,8 +17,8 @@ PT Analytics transforms raw vehicle position data into actionable transit demand
 - Real-time updates every 10 minutes
 
 **Key Applications:**
-- Infrastructure investment prioritization
-- Schedule frequency optimization
+- Infrastructure investment prioritisation
+- Schedule frequency optimisation
 - Route capacity planning
 - Peak hour demand analysis
 
@@ -43,7 +43,9 @@ PT Analytics transforms raw vehicle position data into actionable transit demand
 │  └───────────────────────────────────────────────────┘      │
 │  ┌───────────────────────────────────────────────────┐      │
 │  │ FastAPI + nginx (api.heyico.work)                 │      │
-│  │  • Dwell time analytics endpoints                 │      │
+│  │  • Async endpoints with connection pooling        │      │
+│  │  • API key authentication (SHA-256 hashed)        │      │
+│  │  • Request logging & rate limiting                │      │
 │  │  • HTTPS via Let's Encrypt                        │      │
 │  └───────────────────────────────────────────────────┘      │
 └───────────────────────┬─────────────────────────────────────┘
@@ -64,6 +66,9 @@ PT Analytics transforms raw vehicle position data into actionable transit demand
 │  Analytics (permanent, fixed-size):                         │
 │   • dwell_time_analysis  Running averages by:               │
 │     stop × route × direction × operator × day × hour        │
+│                                                             │
+│  Auth:                                                      │
+│   • api_keys             Hashed keys with user metadata     │
 │                                                             │
 │  Total Size: <50MB (stable)                                 │
 └─────────────────────────────────────────────────────────────┘
@@ -101,7 +106,7 @@ for vehicle in unanalyzed_positions:
         }
 ```
 
-Spatial matching optimization:
+Spatial matching optimisation:
 ```python
 class StopMatcher:
     def __init__(self):
@@ -150,6 +155,35 @@ DO UPDATE SET
 
 ---
 
+### Authentication & Security
+
+API key authentication with SHA-256 hashing protects sensitive endpoints while keeping general discovery endpoints public.
+
+**How it works:**
+- Admin generates API keys via a protected endpoint
+- Keys are hashed with SHA-256 before storage — plain text keys are never persisted
+- Protected endpoints verify incoming keys by hashing and comparing against the database
+- Keys can be deactivated or deleted via admin endpoints
+
+**Endpoint access:**
+- **Public:** `/stops/`, `/routes/`, `/dwell-time/stats`, `/dwell-time/filters`, `/dwell-time/hotspots`
+- **Protected:** `/vehicles/live`, `/dwell-time/routes`, `/dwell-time/route/{route}/stops`, `/dwell-time/stop/{id}/pattern`, `/dwell-time/heatmap`
+
+Authentication is via `PTAnalytics-API-Key` header.
+
+---
+
+### Request Logging & Rate Limiting
+
+All requests are logged with method, path, response time, and status code using structured Python logging. Errors include full tracebacks for production debugging.
+
+Rate limiting via `slowapi` prevents abuse:
+- **Global default:** 30 requests/minute per client IP
+- **Per-endpoint overrides:** Expensive queries (e.g., `/dwell-time/hotspots`) are limited to 5 requests/minute
+- Returns `429 Too Many Requests` when exceeded
+
+---
+
 ### Database Schema
 
 **Operational Tables (10-min retention):**
@@ -186,6 +220,17 @@ CREATE TABLE dwell_time_analysis (
 CREATE INDEX idx_high_demand ON dwell_time_analysis(avg_dwell_seconds DESC);
 ```
 
+**Auth Table:**
+```sql
+CREATE TABLE api_keys (
+    id SERIAL PRIMARY KEY,
+    user_name VARCHAR(100) NOT NULL UNIQUE,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    hashvalue VARCHAR(64) NOT NULL UNIQUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
 **Storage Strategy:**
 - Raw data: Aggressive cleanup (10-min window)
 - Aggregates: Permanent retention (running averages)
@@ -197,14 +242,94 @@ CREATE INDEX idx_high_demand ON dwell_time_analysis(avg_dwell_seconds DESC);
 
 **Base URL:** `https://api.heyico.work`
 
-### High-Demand Stops
+**Authentication:** Protected endpoints require `PTAnalytics-API-Key` header. Public endpoints are accessible without authentication.
+
+### Stops & Routes (Public)
+
 ```http
+GET /stops/?search=station&limit=100&offset=0
+GET /stops/{stop_id}
+GET /routes/?search=86&limit=100&offset=0
+GET /routes/{route_name}
+```
+
+Paginated responses with `total`, `limit`, `offset`, `next`, `prev`, and `data` fields.
+
+**Example — Stop Details:**
+```json
+{
+  "stop": {
+    "stop_id": "2800S40020D",
+    "stop_name": "Queen Square Bus Station",
+    "latitude": 53.4094,
+    "longitude": -2.9886
+  },
+  "route": [
+    {
+      "route_name": "14",
+      "operator_name": "Arriva Merseyside",
+      "direction": "inbound"
+    }
+  ],
+  "route_count": 15
+}
+```
+
+---
+
+### Live Vehicles (Protected)
+
+```http
+GET /vehicles/live?search=AMSY&limit=100&offset=0
+```
+
+Real-time vehicle positions within Liverpool bounding box (last 2 minutes). Search by operator code (e.g., AMSY for Arriva Merseyside).
+
+**Response:**
+```json
+{
+  "total": 42,
+  "limit": 100,
+  "offset": 0,
+  "next": null,
+  "prev": null,
+  "data": [
+    {
+      "vehicle_id": "AMSY-1234",
+      "latitude": 53.4084,
+      "longitude": -2.9876,
+      "bearing": 180.0,
+      "timestamp": "2026-03-14T10:30:00",
+      "route_name": "14",
+      "direction": "inbound",
+      "operator": "AMSY",
+      "origin": "Liverpool",
+      "destination": "Croxteth"
+    }
+  ]
+}
+```
+
+---
+
+### Dwell Time Analytics (Mixed)
+
+**Public:**
+```http
+GET /dwell-time/stats
+GET /dwell-time/filters
 GET /dwell-time/hotspots?min_samples=10&limit=20
 ```
 
-Identifies stops with highest passenger activity based on average dwell time.
+**Protected:**
+```http
+GET /dwell-time/routes?search=14&limit=100&offset=0
+GET /dwell-time/route/{route_name}/stops?direction=inbound&operator=Arriva&day_of_week=1&hour_of_day=8
+GET /dwell-time/stop/{naptan_id}/pattern?route_name=14
+GET /dwell-time/heatmap?route_name=14&direction=inbound&operator=Arriva%20Merseyside
+```
 
-**Response:**
+**Example — High-Demand Stops:**
 ```json
 {
   "hotspots": [
@@ -222,71 +347,58 @@ Identifies stops with highest passenger activity based on average dwell time.
 }
 ```
 
-**Use Case:** Infrastructure investment prioritization
-
----
-
-### Route Comparison
-```http
-GET /dwell-time/routes
-```
-
-Ranks all routes by passenger activity levels.
-
-**Response:**
-```json
-{
-  "routes": [
-    {
-      "route_name": "14",
-      "operators": "Arriva, Stagecoach",
-      "stops_with_data": 32,
-      "avg_dwell": 28.9,
-      "total_samples": 4601
-    }
-  ],
-  "count": 137
-}
-```
-
-**Use Case:** Route capacity planning, frequency optimization
-
----
-
-### Temporal Demand Patterns
-```http
-GET /dwell-time/heatmap?route_name=14&direction=inbound&operator=Arriva
-```
-
-Returns stop-by-hour demand matrix for visualization.
-
-**Response:**
+**Example — Heatmap (stop × hour matrix):**
 ```json
 {
   "route_name": "14",
+  "direction": "inbound",
+  "operator": "Arriva Merseyside",
   "stops": ["Stop A", "Stop B", "Stop C"],
-  "hours": [0, 1, 2, ..., 23],
+  "hours": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
   "data": [
-    [19.1, 22.5, 25.3, 42.1, ...],  // Stop A by hour
-    [15.6, 17.6, 18.7, 38.9, ...],  // Stop B by hour
-    [15.1, 25.4, 31.2, 55.4, ...]   // Stop C by hour
+    [19.1, 22.5, 25.3, null, null, 15.2, 28.4, 42.1, 55.3, 48.7, 35.2, 30.1, 28.9, 27.5, 29.3, 35.8, 48.2, 52.1, 40.3, 32.1, 25.4, 20.1, 18.3, 17.2],
+    [15.6, 17.6, 18.7, null, null, 12.1, 22.3, 38.9, 47.2, 41.3, 30.5, 26.8, 24.1, 23.7, 25.2, 31.4, 42.1, 46.8, 35.7, 28.4, 22.1, 17.8, 15.9, 14.2]
   ]
 }
 ```
 
-**Use Case:** Peak hour identification, schedule adjustment
+**Example — Paginated Routes with Dwell Data:**
+```json
+{
+  "total": 137,
+  "limit": 100,
+  "offset": 0,
+  "next": "https://api.heyico.work/dwell-time/routes?limit=100&offset=100",
+  "prev": null,
+  "data": [
+    {
+      "route_name": "14",
+      "stops_with_data": 32,
+      "operators": 2,
+      "total_samples": 4601,
+      "avg_dwell": 28.9
+    }
+  ]
+}
+```
 
 ---
 
-### Additional Endpoints
+### Admin (Protected)
+
+Admin endpoints are hidden from Swagger documentation and require a separate admin password via `PTAnalytics-Admin-Password` header.
+
 ```http
-GET /dwell-time/stats                    # Network-wide statistics
-GET /dwell-time/stop/{id}/pattern       # Temporal patterns for specific stop
-GET /dwell-time/route/{route}/stops     # All stops on route with filters
-GET /dwell-time/filters                 # Available operators and directions
+GET  /admin/stats
+POST /admin/create_api_key         {"user_name": "client_name"}
+PATCH /admin/api-keys/{user_name}/deactivate
+PATCH /admin/api-keys/{user_name}/activate
+DELETE /admin/api-keys/{user_name}/delete
 ```
 
-**Documentation:** [api.heyico.work/docs](https://api.heyico.work/docs) (OpenAPI/Swagger)
+---
+
+**Interactive Documentation:** [api.heyico.work/docs](https://api.heyico.work/docs) (OpenAPI/Swagger)
 
 ---
 
@@ -320,7 +432,7 @@ GET /dwell-time/filters                 # Available operators and directions
 
 ### 10-Minute Rolling Window
 
-**Challenge:** 1GB RAM constraint on free-tier VM requires minimizing database size
+**Challenge:** 1GB RAM constraint on free-tier VM requires minimising database size
 
 **Solution:** Aggressive cleanup of raw positions after 10 minutes, keeping only aggregated results
 
@@ -336,9 +448,9 @@ GET /dwell-time/filters                 # Available operators and directions
 
 **Solution:** Built XML parser for TransXChange files, loaded 6,395 stops and 556 route patterns
 
-**Result:** Native data format eliminates reconciliation issues common with GTFS in UK
+**Result:** Native data format eliminates reconciliation issues common with GTFS conversions
 
-**Learning:** Domain research revealed UK transit industry's data standards differ from US
+**Learning:** Domain research revealed UK transit industry's data standards differ from international norms
 
 ---
 
@@ -350,14 +462,14 @@ GET /dwell-time/filters                 # Available operators and directions
 - <100ms API response time (p95)
 - 99%+ uptime via systemd auto-restart
 
-**Resource Utilization:**
+**Resource Utilisation:**
 - 1GB RAM constraint met on both VMs
 - <50MB database size maintained
 - Zero external service dependencies
 - $0/month operational cost
 
 **Data Coverage:**
-- 100+ routes monitored 
+- 100+ routes monitored
 - 11 transit operators
 - 50,000+ dwell time samples collected
 - 1,000+ stops with demand data
@@ -369,17 +481,33 @@ GET /dwell-time/filters                 # Available operators and directions
 | Component | Technology | Rationale |
 |-----------|-----------|-----------|
 | **Database** | PostgreSQL 14 + PostGIS | Geospatial queries, ACID compliance, free |
-| **Backend** | Python 3.12 + FastAPI | Async I/O, type hints, auto-generated docs |
+| **Backend** | Python 3.10 + FastAPI | Async I/O, type hints, auto-generated docs |
+| **Async DB** | asyncpg | Native async PostgreSQL driver with connection pooling |
+| **Validation** | Pydantic | Request/response validation, serialisation |
+| **Auth** | API key (SHA-256 hashed) | Stateless, lightweight, suitable for service-to-service |
+| **Rate Limiting** | slowapi | Per-IP and per-endpoint request throttling |
+| **Testing** | pytest + httpx + TestClient | 28 tests covering auth, pagination, edge cases |
 | **Orchestration** | Cron + systemd | Zero dependencies, reliable, lightweight |
 | **Infrastructure** | Oracle Cloud (Always Free) | 2× VMs with 1GB RAM each, ARM architecture |
 | **SSL/TLS** | Let's Encrypt + nginx | Free certificates with auto-renewal |
 | **Data Source** | UK Bus Open Data Service | Government API, real-time GPS, free access |
 
-**Key Libraries:**
-- `psycopg2` - PostgreSQL driver
-- `lxml` - TransXChange XML parsing
-- `shapely` - Geospatial calculations
-- `numpy` - Statistical operations
+**Key Libraries:** `asyncpg`, `fastapi`, `pydantic`, `slowapi`, `lxml`, `shapely`, `numpy`
+
+---
+
+## Testing
+
+28 automated tests covering:
+- **Public endpoints:** Stops and routes listing, search, pagination, detail views
+- **Protected endpoints:** API key validation (403 missing, 401 invalid, 200 valid)
+- **Edge cases:** Invalid IDs (404), invalid pagination (422), non-existent resources
+- **Admin lifecycle:** Key creation, deactivation, double-deactivation guard, deletion
+
+Run tests:
+```bash
+python -m pytest tests/test_api.py -v
+```
 
 ---
 
@@ -412,7 +540,7 @@ GET /dwell-time/filters                 # Available operators and directions
 
 **Solution:** Streaming processing, indexed queries, aggressive cleanup
 
-**Outcome:** Demonstrated optimization for constrained environments
+**Outcome:** Demonstrated optimisation for constrained environments
 
 ---
 
@@ -432,13 +560,13 @@ GET /dwell-time/filters                 # Available operators and directions
 ### Academic Basis
 
 **Research Foundation:**
-- Tirachini (2013): "Dwell time positively correlates with passenger load in bus systems"
+- Tirachini (2013): Dwell time positively correlates with passenger load in bus systems
 - Transit Capacity and Quality of Service Manual (TCRP): Standard metric for demand estimation
-- Practitioners: Transport for London, MBTA Boston, WMATA Washington DC
+- Used by: Transport for London, MBTA Boston, WMATA Washington DC
 
 **Validation Approach:**
 - Compare patterns with known high-demand locations (stadiums, universities, hospitals)
-- Verify peak vs off-peak hourly patterns align with commuter behavior
+- Verify peak vs off-peak hourly patterns align with commuter behaviour
 - Check directional asymmetry (inbound morning rush, outbound evening rush)
 
 ---
@@ -466,26 +594,27 @@ GET /dwell-time/filters                 # Available operators and directions
 
 ## Project Evolution
 
-**November 2025:** Initial development with GTFS Static approach  
+**November 2025:** Initial development with GTFS Static approach
 → Abandoned due to data quality issues in UK (3.4% match rate)
 
-**December 2025:** Migrated to TransXChange (UK native format)  
+**December 2025:** Migrated to TransXChange (UK native format)
 → 6.5x improvement in stop coverage (37 → 240 stops)
 
-**December 2025:** Pivoted from complex Service Reliability Index to focused dwell time analysis  
+**December 2025:** Pivoted from complex Service Reliability Index to focused dwell time analysis
 → Simplified metric with clearer business value
 
-**December 2025 - January 2026:** Production hardening  
-→ SSL deployment, systemd management, aggressive optimization for 1GB RAM constraints
+**December 2025 - January 2026:** Production hardening
+→ SSL deployment, systemd management, aggressive optimisation for 1GB RAM constraints
 
-**Key Learning:** Iterative refinement based on real-world operational constraints
+**March 2026:** API modernisation
+→ Async endpoints (asyncpg), Pydantic models, API key auth, rate limiting, 28 automated tests
 
 ---
 
 ## Use Cases
 
 ### 1. Infrastructure Planning
-**Question:** Where should the city invest in bus shelter upgrades?
+**Question:** Where should investment go for bus shelter upgrades?
 
 **Solution:** Query `/dwell-time/hotspots` to identify top 20 highest-demand stops
 
@@ -493,10 +622,10 @@ GET /dwell-time/filters                 # Available operators and directions
 
 ---
 
-### 2. Schedule Optimization
+### 2. Schedule Optimisation
 **Question:** Should Route 14 increase frequency during morning peak?
 
-**Solution:** Query `/dwell-time/heatmap` to analyze hourly demand patterns
+**Solution:** Query `/dwell-time/heatmap` to analyse hourly demand patterns
 
 **Impact:** Right-sized service levels, reduced overcrowding
 
@@ -525,12 +654,12 @@ GET /dwell-time/filters                 # Available operators and directions
 **Infrastructure:**
 - 2× Linux VMs with 1GB RAM each (Oracle Cloud Always Free tier)
 - PostgreSQL 14 + PostGIS
-- Python 3.12+
+- Python 3.10+
 - nginx + Let's Encrypt for SSL
 
 **Data Sources:**
 - UK Bus Open Data Service API key (free registration)
-- TransXChange XML timetable files for Liverpool region
+- TransXChange XML timetable files for target region
 
 **Deployment:**
 - FastAPI as systemd service
@@ -543,8 +672,8 @@ GET /dwell-time/filters                 # Available operators and directions
 
 ## Contact
 
-**API Demo:** [api.heyico.work/docs](https://api.heyico.work/docs)  
-**GitHub:** [josephmjustin/pt-analytics](https://github.com/josephmjustin/pt-analytics)  
+**API Demo:** [api.heyico.work/docs](https://api.heyico.work/docs)
+**GitHub:** [josephmjustin/pt-analytics](https://github.com/josephmjustin/pt-analytics)
 **LinkedIn:** [josephmjustin](https://www.linkedin.com/in/josephmjustin/)
 
 ---
