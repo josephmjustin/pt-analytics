@@ -8,7 +8,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.api.database import get_db_connection
+from src.api.database_sync import get_db_connection
 from psycopg2.extras import RealDictCursor
 
 OPERATOR_CODE_MAP = {

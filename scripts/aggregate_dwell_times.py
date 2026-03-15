@@ -8,7 +8,7 @@ from datetime import datetime
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
-from src.api.database import get_db_connection
+from src.api.database_sync import get_db_connection
 from psycopg2.extras import execute_batch
 
 def aggregate_dwell_times():

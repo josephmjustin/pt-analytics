@@ -7,7 +7,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from src.api.database import get_db_connection
+from src.api.database_sync import get_db_connection
 
 
 def find_nearest_stop_for_route_postgis(lat: float, lon: float, route_name: str, direction: str = None, radius_m: float = 30.0):

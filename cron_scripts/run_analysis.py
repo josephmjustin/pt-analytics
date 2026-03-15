@@ -18,7 +18,7 @@ sys.path.insert(0, project_root)
 sys.path.append(os.path.join(project_root, 'scripts'))
 
 from src.processing.stop_detector import find_stop_events
-from src.api.database import get_db_connection
+from src.api.database_sync import get_db_connection
 from psycopg2.extras import execute_batch, RealDictCursor
 
 # Operator code mapping
