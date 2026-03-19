@@ -2,14 +2,14 @@
 Dwell Time Analysis API Endpoints
 Provides demand proxy insights based on dwell time patterns
 """
-from fastapi import APIRouter, HTTPException, Query, Depends, Request
+import json
+from fastapi import APIRouter, HTTPException, Query, Depends, Request, Response
 from pydantic import BaseModel
 from typing import Generic, TypeVar, Optional, List
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 from src.api.database import get_db
 from src.api.auth import verify_api_key
 from src.api.rate_limiter import limiter
+from src.api.redis_client import get_redis
 
 T = TypeVar('T')
 
@@ -112,6 +112,10 @@ OPERATOR_NAME_MAP = {
     'Stagecoach': 'Stagecoach',
     'First Bus': 'First Bus',
 }
+
+def build_cache_key(endpoint, **params):
+    key = f"{endpoint}:" + ":".join(f"{k}={v}" for k, v in sorted(params.items()) if v is not None)
+    return key
 
 @router.get("/stats", response_model=DwellTimeStats)
 async def get_dwell_time_stats(conn=Depends(get_db)):
@@ -313,9 +317,11 @@ async def get_stop_dwell_pattern(
 @limiter.limit("5/minute")
 async def get_high_demand_stops(
     request: Request,
+    response: Response,
     min_samples: int | None = Query(10, ge=1),
     limit: int | None = Query(20, ge=1, le=100),
-    conn=Depends(get_db)
+    conn=Depends(get_db),
+    redis = Depends(get_redis)
 ):
     """Get stops with highest average dwell times (demand proxy)"""
     
@@ -335,20 +341,29 @@ async def get_high_demand_stops(
         ORDER BY AVG(dta.avg_dwell_seconds) DESC
         LIMIT $2
     """
-    
-    hotspots = await conn.fetch(query_hotspots, min_samples, limit)
-    
-    return Hotspots(
-        hotspots=[HotspotStops(**dict(h)) for h in hotspots],
-        count=len(hotspots)
-    )
+    key = build_cache_key("hotspots", min_samples=min_samples, limit=limit)
+    cached = await redis.get(key)
+    if cached:
+        response.headers["X-Cache"] = "HIT"
+        return Hotspots(**json.loads(cached))
+    else:
+        hotspots = await conn.fetch(query_hotspots, min_samples, limit)
+        result = Hotspots(
+            hotspots=[HotspotStops(**dict(h)) for h in hotspots],
+            count=len(hotspots)
+        )
+        await redis.set(key, json.dumps(result.model_dump()), ex=3600)  # Cache for 1 hour
+        response.headers["X-Cache"] = "MISS"
+        return result
 
 @router.get("/heatmap", response_model=HeatmapData, dependencies=[Depends(verify_api_key)])
 async def get_dwell_time_heatmap(
     route_name: str,
+    response: Response,
     direction: str | None = Query(None, description="Filter by direction, lowercase (outbound/ inbound)"),
     operator: str | None = Query(None, description="Full operator name as returned by /dwell-time/filters endpoint (e.g., 'Arriva Merseyside', not 'Arriva')"),
-    conn=Depends(get_db)
+    conn=Depends(get_db),
+    redis = Depends(get_redis)
 ):
     """Get heatmap data: stops × hours with dwell times"""
     
@@ -356,83 +371,93 @@ async def get_dwell_time_heatmap(
     operator_txc = operator
     operator_dwell = OPERATOR_NAME_MAP.get(operator, operator) if operator else None
     
-    # Get stops on route in sequence order
-    where = "WHERE rp.route_name = $1"
-    params_stops = [route_name]
-    
-    if direction:
-        where += " AND rp.direction = $" + str(len(params_stops) + 1)
-        params_stops.append(direction)
-    
-    if operator_txc:
-        where += " AND rp.operator_name = $" + str(len(params_stops) + 1)
-        params_stops.append(operator_txc)
-    
-    query_stops = f"""
-        SELECT DISTINCT
-            ps.naptan_id,
-            ts.stop_name,
-            MIN(ps.stop_sequence) as sequence
-        FROM txc_pattern_stops ps
-        JOIN txc_stops ts ON ps.naptan_id = ts.naptan_id
-        JOIN txc_route_patterns rp ON ps.pattern_id = rp.pattern_id
-        {where}
-        GROUP BY ps.naptan_id, ts.stop_name ORDER BY sequence
-    """
-    
-    stops = await conn.fetch(query_stops, *params_stops)
-    
-    if not stops:
-        raise HTTPException(status_code=404, detail="No stops found for this route")
-    
-    # Get dwell time data for heatmap
-    where = "WHERE route_name = $1"
-    params_heatmap = [route_name]
+    key_heatmap = build_cache_key("heatmap", route_name=route_name, direction=direction, operator=operator_dwell)
+    cached_heatmap = await redis.get(key_heatmap)
+    if cached_heatmap:
+        response.headers["X-Cache"] = "HIT"
+        return HeatmapData(**json.loads(cached_heatmap))
+    else:
+        # Get stops on route in sequence order
+        where = "WHERE rp.route_name = $1"
+        params_stops = [route_name]
+        
+        if direction:
+            where += " AND rp.direction = $" + str(len(params_stops) + 1)
+            params_stops.append(direction)
+        
+        if operator_txc:
+            where += " AND rp.operator_name = $" + str(len(params_stops) + 1)
+            params_stops.append(operator_txc)
+        
+        query_stops = f"""
+            SELECT DISTINCT
+                ps.naptan_id,
+                ts.stop_name,
+                MIN(ps.stop_sequence) as sequence
+            FROM txc_pattern_stops ps
+            JOIN txc_stops ts ON ps.naptan_id = ts.naptan_id
+            JOIN txc_route_patterns rp ON ps.pattern_id = rp.pattern_id
+            {where}
+            GROUP BY ps.naptan_id, ts.stop_name ORDER BY sequence
+        """
 
-    if direction:
-        where += " AND direction = $" + str(len(params_heatmap) + 1)
-        params_heatmap.append(direction)
+        stops = await conn.fetch(query_stops, *params_stops)
+
+        if not stops:
+            raise HTTPException(status_code=404, detail="No stops found for this route")
+        
+        # Get dwell time data for heatmap
+        where = "WHERE route_name = $1"
+        params_heatmap = [route_name]
+
+        if direction:
+            where += " AND direction = $" + str(len(params_heatmap) + 1)
+            params_heatmap.append(direction)
+        
+        if operator_dwell:
+            where += " AND operator = $" + str(len(params_heatmap) + 1)
+            params_heatmap.append(operator_dwell)
+        
+        query_heatmap = f"""
+            SELECT 
+                naptan_id,
+                hour_of_day,
+                ROUND(AVG(avg_dwell_seconds)::numeric, 1) as avg_dwell
+            FROM dwell_time_analysis
+            {where}
+            GROUP BY naptan_id, hour_of_day
+        """  
     
-    if operator_dwell:
-        where += " AND operator = $" + str(len(params_heatmap) + 1)
-        params_heatmap.append(operator_dwell)
-    
-    query_heatmap = f"""
-        SELECT 
-            naptan_id,
-            hour_of_day,
-            ROUND(AVG(avg_dwell_seconds)::numeric, 1) as avg_dwell
-        FROM dwell_time_analysis
-        {where}
-        GROUP BY naptan_id, hour_of_day
-    """  
-    
-    heatmap_data = await conn.fetch(query_heatmap, *params_heatmap)
-    
-    # Build matrix: stops × hours
-    hours = list(range(24))
-    stop_ids = [s['naptan_id'] for s in stops]
-    stop_names = [s['stop_name'] for s in stops]
-    
-    # Initialize matrix with None
-    matrix = [[None for _ in hours] for _ in stop_ids]
-    
-    # Fill matrix with actual data
-    for row in heatmap_data:
-        try:
-            stop_idx = stop_ids.index(row['naptan_id'])
-            hour_idx = row['hour_of_day']
-            matrix[stop_idx][hour_idx] = float(row['avg_dwell'])
-        except (ValueError, IndexError):
-            continue
-    
-    return HeatmapData(
-        route_name=route_name,
-        direction=direction,
-        operator=operator,
-        stops=stop_names,
-        hours=hours,
-        data=matrix
-    )
+        heatmap_data = await conn.fetch(query_heatmap, *params_heatmap)
+
+        # Build matrix: stops × hours
+        hours = list(range(24))
+        stop_ids = [s['naptan_id'] for s in stops]
+        stop_names = [s['stop_name'] for s in stops]
+        
+        # Initialize matrix with None
+        matrix = [[None for _ in hours] for _ in stop_ids]
+        
+        # Fill matrix with actual data
+        for row in heatmap_data:
+            try:
+                stop_idx = stop_ids.index(row['naptan_id'])
+                hour_idx = row['hour_of_day']
+                matrix[stop_idx][hour_idx] = float(row['avg_dwell'])
+            except (ValueError, IndexError):
+                continue
+        
+        result = HeatmapData(
+            route_name=route_name,
+            direction=direction,
+            operator=operator,
+            stops=stop_names,
+            hours=hours,
+            data=matrix
+        )        
+
+        await redis.set(key_heatmap, json.dumps(result.model_dump()), ex=3600)  # Cache heatmap data for 1 hour
+        response.headers["X-Cache"] = "MISS"
+        return result
 
 

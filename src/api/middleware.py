@@ -1,6 +1,6 @@
 import logging
 import time
-from fastapi import Request
+from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 
 logging.basicConfig(level=logging.INFO)
@@ -15,6 +15,7 @@ async def log_requests(request: Request, call_next):
         raise
     process_time = time.time() - start_time
     logger.info(f"{request.method} {request.url} completed in {process_time:.2f}s with status {response.status_code}")
+    response.headers["X-Process-Time"] = f"{process_time:.2f}s"
     return response
 
 async def global_exception_handler(request: Request, exc: Exception):
