@@ -180,7 +180,9 @@ def poll_and_ingest():
     
     # Store positions
     stored = store_vehicle_positions(vehicles)
+    result = {"stored": stored, "total": len(vehicles), "with_direction": with_direction}
     print(f"[{timestamp}] Stored {stored}/{len(vehicles)} positions ({with_direction} with direction)")
+    return result
 
 
 if __name__ == "__main__":

@@ -10,4 +10,6 @@ geopandas==1.0.1
 shapely==2.0.6
 asyncpg==0.30.0
 pydantic==2.10.4
-slowapi
+slowapi==0.1.9
+celery==5.3.0
+redis==4.5.1

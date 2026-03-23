@@ -10,3 +10,4 @@ venv/
 notebooks/.ipynb_checkpoints/
 .sql *.sql
 .vscode/
+celerybeat-schedule.*
