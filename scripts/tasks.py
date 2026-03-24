@@ -9,23 +9,23 @@ load_dotenv()
 
 redis = Redis.from_url(os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/1"))
 
-@app.task(bind=True, max_retries=3, default_retry_delay=30)
+@app.task(bind=True, max_retries=0, time_limit=60)
 def run_ingestion(self):
-    if not self.request.retries:
-        lock = redis.set("lock:ingestion", "running", ex=60, nx=True)
-        if not lock:
-            return "skipped - previous run active"
+    lock = redis.set("lock:ingestion", "running", ex=60, nx=True)
+    if not lock:
+        return "skipped"
     try:
         result = poll_and_ingest()
         redis.delete("lock:ingestion")
         return result
-    except Exception as exc:
-        raise self.retry(exc=exc)
+    except Exception:
+        redis.delete("lock:ingestion")
+        return "failed - next beat will retry"
 
-@app.task(bind=True, max_retries=3, default_retry_delay=30)
+@app.task(bind=True, max_retries=3, default_retry_delay=30, time_limit=300)
 def run_analysis_task(self):
     if not self.request.retries:
-        lock = redis.set("lock:analysis", "running", ex=60, nx=True)
+        lock = redis.set("lock:analysis", "running", ex=300, nx=True)
         if not lock:
             return "skipped - previous run active"
     try:
