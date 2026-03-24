@@ -11,9 +11,10 @@ redis = Redis.from_url(os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/1"
 
 @app.task(bind=True, max_retries=3, default_retry_delay=30)
 def run_ingestion(self):
-    lock = redis.set("lock:ingestion", "running", ex=60, nx=True)
-    if not lock:
-        return "skipped - previous run active"
+    if not self.request.retries:
+        lock = redis.set("lock:ingestion", "running", ex=60, nx=True)
+        if not lock:
+            return "skipped - previous run active"
     try:
         result = poll_and_ingest()
         redis.delete("lock:ingestion")
@@ -23,9 +24,10 @@ def run_ingestion(self):
 
 @app.task(bind=True, max_retries=3, default_retry_delay=30)
 def run_analysis_task(self):
-    lock = redis.set("lock:analysis", "running", ex=60, nx=True)
-    if not lock:
-        return "skipped - previous run active"
+    if not self.request.retries:
+        lock = redis.set("lock:analysis", "running", ex=60, nx=True)
+        if not lock:
+            return "skipped - previous run active"
     try:
         result = run_analysis()
         redis.delete("lock:analysis")
