@@ -16,3 +16,7 @@ app.conf.beat_schedule = {
         'schedule': 600.0,
     },
 }
+
+app.conf.update(
+    result_expires=3600,
+)
