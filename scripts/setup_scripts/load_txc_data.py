@@ -95,8 +95,6 @@ for op_name, op_data in data['operators'].items():
 print(f"   Inserting {len(pattern_values):,} patterns...")
 
 # Use execute_values with RETURNING to get pattern_ids
-from io import StringIO
-import csv
 
 # Create temp table approach for batch insert with RETURNING
 cur.execute("""
@@ -165,7 +163,7 @@ for meta in pattern_metadata:
                 skipped_stops.add(naptan_id)
 
 print(f"   Total sequences: {len(sequence_values):,}")
-print(f"   Inserting in batches...")
+print("   Inserting in batches...")
 
 # Insert in chunks
 chunk_size = 5000

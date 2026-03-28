@@ -55,7 +55,7 @@ def extract_nested_zips(main_zip_path, output_dir, temp_dir):
             print(f"    ✗ Error: {e}")
     
     print("\n" + "="*80)
-    print(f"EXTRACTION COMPLETE")
+    print("EXTRACTION COMPLETE")
     print(f"  Total XML files extracted: {xml_count}")
     print(f"  Location: {output_dir}")
     print("="*80)

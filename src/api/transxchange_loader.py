@@ -4,7 +4,6 @@ Loads JSON at startup and provides lookup functions
 """
 
 import json
-from pathlib import Path
 from typing import Dict, List, Optional, Set
 import math
 
@@ -43,10 +42,10 @@ def load_transxchange_data(json_path: str = "/data/liverpool_transit_data_enrich
             break
     
     if not found_path:
-        print(f"ERROR: JSON file not found. Tried:", flush=True)
+        print("ERROR: JSON file not found. Tried:", flush=True)
         for path in paths_to_try:
             print(f"  - {path}", flush=True)
-        raise FileNotFoundError(f"TransXChange data not found")
+        raise FileNotFoundError("TransXChange data not found")
     
     json_path = found_path
     print(f"Loading TransXChange data from {json_path}...", flush=True)
@@ -86,7 +85,7 @@ def load_transxchange_data(json_path: str = "/data/liverpool_transit_data_enrich
     
     print(f"✓ Loaded {len(STOPS):,} stops", flush=True)
     print(f"✓ Loaded {len(ROUTE_STOPS):,} routes", flush=True)
-    print(f"✓ Built lookup indexes", flush=True)
+    print("✓ Built lookup indexes", flush=True)
 
 def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Calculate distance in meters between two lat/lon points"""

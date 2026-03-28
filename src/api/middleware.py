@@ -1,6 +1,6 @@
 import logging
 import time
-from fastapi import Request, Response
+from fastapi import Request
 from fastapi.responses import JSONResponse
 
 logging.basicConfig(level=logging.INFO)

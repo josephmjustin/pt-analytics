@@ -7,7 +7,6 @@ OPTIMIZED: Multiprocessing for 9600+ files
 import os
 import xml.etree.ElementTree as ET
 import json
-from pathlib import Path
 from collections import defaultdict
 from multiprocessing import Pool, cpu_count
 
@@ -124,7 +123,6 @@ def parse_transxchange_file(xml_path, global_stops):
                 journey_patterns = std_service.findall('.//txc:JourneyPattern', NS)
                 
                 for pattern in journey_patterns:
-                    pattern_id = pattern.get('id', 'unknown')
                     direction_elem = pattern.find('txc:Direction', NS)
                     direction = direction_elem.text if direction_elem is not None else "unknown"
                     
@@ -262,7 +260,7 @@ def process_all_files(input_dir, output_json):
     
     print(f"\nOutput written to: {output_json}")
     print(f"File size: {file_size_mb:.2f} MB")
-    print(f"\nSummary:")
+    print("\nSummary:")
     print(f"  Unique stops: {len(global_stops)}")
     print(f"  Operators: {len(output['operators'])}")
     print(f"  Routes: {total_routes}")
@@ -272,7 +270,7 @@ def process_all_files(input_dir, output_json):
     print(f"  Stops with lat/lon: {stops_with_coords}/{len(global_stops)}")
     
     # Show operators
-    print(f"\nOperators found:")
+    print("\nOperators found:")
     for op_name, op_data in sorted(output['operators'].items()):
         route_count = len(op_data['routes'])
         print(f"  {op_name} ({op_data['noc']}): {route_count} routes")

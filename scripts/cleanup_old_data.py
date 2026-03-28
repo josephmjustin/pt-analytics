@@ -26,7 +26,7 @@ def cleanup_old_data():
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        logger.info(f"Starting cleanup...")
+        logger.info("Starting cleanup...")
         
         # ========================================================================
         # 1. VEHICLE POSITIONS - Keep only recent unanalyzed
@@ -70,7 +70,7 @@ def cleanup_old_data():
         logger.info(f"   Deleted: {analyzed_to_delete:,} analyzed (>15min)")
         if unanalyzed_to_delete > 0:
             logger.warning(f"Deleted {unanalyzed_to_delete:,} unanalyzed (>30min) - analysis falling behind")
-            logger.info(f"      Analysis falling behind!")
+            logger.info("      Analysis falling behind!")
         logger.info(f"   After: {before_positions - total_deleted:,} positions")
         
         # ========================================================================
@@ -90,7 +90,7 @@ def cleanup_old_data():
             conn.commit()
             logger.info(f"   Deleted: {deleted:,} arrivals (>1 hour)")
         else:
-            logger.info(f"   No old arrivals to clean")
+            logger.info("   No old arrivals to clean")
         
         # ========================================================================
         # VACUUM to reclaim disk space

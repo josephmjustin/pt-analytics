@@ -1,0 +1,3 @@
+[lint.per-file-ignores]
+"scripts/*" = ["E402"]
+"cron_scripts/*" = ["E402"]
