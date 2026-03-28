@@ -1,5 +1,6 @@
 import asyncpg
 import os
+import ssl as ssl_module
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -10,7 +11,12 @@ pool: asyncpg.Pool | None = None
 
 async def create_pool():
     global pool
-    pool = await asyncpg.create_pool(DB_URL, min_size=5, max_size=20)
+    ssl_context = None
+    if os.getenv("DB_SSL", "false") == "true":
+        ssl_context = ssl_module.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl_module.CERT_NONE
+    pool = await asyncpg.create_pool(DB_URL, min_size=5, max_size=20, ssl=ssl_context)
 
 async def close_pool():
     global pool

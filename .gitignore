@@ -13,3 +13,5 @@ notebooks/.ipynb_checkpoints/
 .vscode/
 celerybeat-schedule.*
 .dockerignore
+task-definition.json
+.sql

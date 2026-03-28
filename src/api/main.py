@@ -1,10 +1,11 @@
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+from slowapi.errors import RateLimitExceeded
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.middleware import SlowAPIMiddleware
-from slowapi.errors import RateLimitExceeded
-from src.api.routes import stops, tasks_api, vehicles, routes, dwell_time, admin
+from src.api.routes import stops, vehicles, routes, dwell_time, admin
 from src.api.database import create_pool, close_pool
 from src.api.middleware import log_requests, global_exception_handler
 from .rate_limiter import limiter
@@ -50,7 +51,9 @@ app.include_router(vehicles.router)
 app.include_router(routes.router)
 app.include_router(dwell_time.router)
 app.include_router(admin.router)
-app.include_router(tasks_api.router)
+if os.getenv("ENABLE_TASKS_API", "true") == "true":
+    from src.api.routes import tasks_api
+    app.include_router(tasks_api.router)
 
 @app.get("/")
 def root():

@@ -1,17 +1,19 @@
 services:
   db:
-    image: postgres:15
+    image: postgis/postgis:15-3.4
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_USER: ptuser
+      POSTGRES_USER: pt_user
       POSTGRES_PASSWORD: ptpass
       POSTGRES_DB: ptanalytics
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ptuser"]
+      test: ["CMD-SHELL", "pg_isready -U ptuser -d ptanalytics"]
       interval: 5s
       timeout: 5s
       retries: 5
+    volumes:
+      - pgdata:/var/lib/postgresql/data
 
   redis:
     image: redis:7
@@ -21,7 +23,7 @@ services:
   api:
     build: .
     ports:
-      - "8080:8080"
+      - "8081:8080"
     env_file:
       - .env.docker
     depends_on:
@@ -29,3 +31,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+
+volumes:
+    pgdata:
