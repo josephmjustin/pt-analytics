@@ -21,7 +21,7 @@ print(f"Total stops in TransXChange: {len(data['stops'])}")
 missing_coords = sum(1 for s in data['stops'].values() if s['lat'] is None or s['lon'] is None)
 print(f"Stops with missing lat/lon: {missing_coords}")
 
-print(f"\nLoading GTFS Static stops.txt...")
+print("\nLoading GTFS Static stops.txt...")
 
 # Load GTFS stops
 gtfs_stops = {}
@@ -92,7 +92,7 @@ print(f"Output file size: {file_size_mb:.2f} MB")
 stops_with_coords = sum(1 for s in data['stops'].values() if s['lat'] is not None and s['lon'] is not None)
 coverage_pct = 100 * stops_with_coords / len(data['stops'])
 
-print(f"\nFinal summary:")
+print("\nFinal summary:")
 print(f"  Total stops: {len(data['stops'])}")
 print(f"  Stops with coordinates: {stops_with_coords}")
 print(f"  Stops missing coordinates: {len(data['stops']) - stops_with_coords}")

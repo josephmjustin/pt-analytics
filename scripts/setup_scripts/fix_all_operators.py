@@ -74,7 +74,7 @@ def check_all_tables():
         for row in cur.fetchall():
             symbol = "✓" if row['operator'] not in ['Unknown', 'A2BV', 'SCMY'] else "✗"
             print(f"   {symbol} {row['operator']:20} {row['count']:,} records")
-    except:
+    except Exception:
         print("   (table empty or doesn't exist)")
     
     cur.close()
@@ -166,7 +166,7 @@ def fix_all_operators():
             """)
             if cur.rowcount > 0:
                 print(f"   {table:40} deleted {cur.rowcount} records")
-        except Exception as e:
+        except Exception:
             pass  # Table might not exist or have operator column
     
     conn.commit()

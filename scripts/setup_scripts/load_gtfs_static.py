@@ -1,7 +1,6 @@
 import csv
 import psycopg2
 from psycopg2.extras import execute_values
-import sys
 
 def load_routes(cursor):
     routes = []

@@ -182,7 +182,7 @@ def poll_and_ingest():
     vehicles = fetch_vehicle_positions()
     
     if not vehicles:
-        logger.info(f"No vehicles fetched")
+        logger.info("No vehicles fetched")
         return {"stored": 0, "total": 0, "with_direction": 0}
     
     # Count vehicles with direction

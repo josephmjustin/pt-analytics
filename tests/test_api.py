@@ -233,7 +233,7 @@ def test_admin_create_and_deactivate_key(client):
         headers=headers
     )
     assert deactivate_response.status_code == 200
-    assert deactivate_response.json()["active"] == False
+    assert not deactivate_response.json()["active"]
 
     # Deactivate again — should fail
     again_response = client.patch(

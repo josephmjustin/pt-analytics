@@ -345,7 +345,7 @@ def detect_and_match_stops():
 
 def run_analysis():
     """Main analysis with proper error handling"""
-    logger.info(f"Starting analysis...")
+    logger.info("Starting analysis...")
     
     try:
         stop_events, matched = detect_and_match_stops()
@@ -358,7 +358,7 @@ def run_analysis():
             logger.info("Cleaning up old data...")
             cleanup_old_data()
         
-        logger.info(f"✓ Analysis complete")
+        logger.info("✓ Analysis complete")
         return {"stop_events": stop_events, "matched": matched}
         
     except Exception as e:
