@@ -2,11 +2,15 @@
 Stop information endpoints (TXC data only)
 """
 from fastapi import APIRouter, HTTPException, Query, Depends, Request
-from src.api.database import get_db
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy import func, select, text
+
+from src.api.database import get_session
+from src.api.models import TxcStop, TxcRoutePatterns, TxcPatternStops
 
 class Stop(BaseModel):
-    stop_id: str
+    model_config = ConfigDict(from_attributes=True)
+    naptan_id: str
     stop_name: str
     latitude: float
     longitude: float
@@ -20,6 +24,7 @@ class PaginatedStops(BaseModel):
     data: list[Stop]
 
 class Route(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     route_name: str
     operator_name: str
     direction: str | None = None
@@ -40,27 +45,19 @@ async def get_all_stops(
     ),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    conn=Depends(get_db)
+    session=Depends(get_session)
 ):
-    params = []
-    where = "WHERE latitude IS NOT NULL AND longitude IS NOT NULL"
-
+    base_query = select(TxcStop)
     if search:
-        where += " AND LOWER(stop_name) LIKE LOWER($" + str(len(params) + 1) + ")"
-        params.append(f"%{search}%")
+        base_query = base_query.where(TxcStop.stop_name.ilike(f"%{search}%"))
+    filtered_query = base_query.order_by(TxcStop.stop_name).where(TxcStop.latitude.is_not(None), TxcStop.longitude.is_not(None))
+    count_query = select(func.count()).select_from(filtered_query.subquery())
+    query = filtered_query.offset(offset).limit(limit)
+    total = (await session.execute(count_query)).scalar()
 
-    total = await conn.fetchval(f"SELECT COUNT(*) FROM txc_stops {where}", *params)
-
-    query = f"""
-        SELECT naptan_id as stop_id, stop_name, latitude, longitude
-        FROM txc_stops {where}
-        ORDER BY stop_name
-        LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}
-    """
-    params.extend([limit, offset])
-
-    stops = await conn.fetch(query, *params)
-    data = [Stop(**dict(s)) for s in stops]
+    stops = await session.execute(query)
+    rows = stops.scalars().all()
+    data = [Stop.model_validate(row) for row in rows]
 
     base = str(request.base_url).rstrip("/")
     next_url = f"{base}/stops?limit={limit}&offset={offset + limit}" if offset + limit < total else None
@@ -69,29 +66,16 @@ async def get_all_stops(
     return PaginatedStops(total=total, limit=limit, offset=offset, next=next_url, prev=prev_url, data=data)
 
 @router.get("/{stop_id}", response_model=StopDetail)
-async def get_stop_details(stop_id: str, conn=Depends(get_db)):
+async def get_stop_details(stop_id: str, session=Depends(get_session)):
     """Get stop details with routes serving it"""
-    query_stop = """
-        SELECT naptan_id as stop_id, stop_name, latitude, longitude
-        FROM txc_stops
-        WHERE naptan_id = $1
-    """
-    query_route = """
-        SELECT DISTINCT
-            rp.route_name,
-            rp.operator_name,
-            rp.direction
-        FROM txc_pattern_stops ps
-        JOIN txc_route_patterns rp ON ps.pattern_id = rp.pattern_id
-        WHERE ps.naptan_id = $1
-        ORDER BY rp.route_name, rp.direction
-    """
-    stop_record = await conn.fetchrow(query_stop, stop_id)
+    query_stop = await session.execute(select(TxcStop).where(TxcStop.naptan_id == stop_id))
+    stop_record = query_stop.scalar_one_or_none()
     if not stop_record:
         raise HTTPException(status_code=404, detail="Stop not found")
-    route_records = await conn.fetch(query_route, stop_id)
-    stop = Stop(**dict(stop_record))
-    routes = [Route(**dict(r)) for r in route_records]
+    query_route = await session.execute((select(TxcRoutePatterns).where(TxcRoutePatterns.pattern_stops.any(TxcPatternStops.naptan_id == stop_id)).distinct()).order_by(TxcRoutePatterns.route_name, TxcRoutePatterns.direction))
+    route_records = query_route.scalars().all()
+    stop = Stop.model_validate(stop_record)
+    routes = [Route.model_validate(r) for r in route_records]
 
     return StopDetail(
         stop=stop,

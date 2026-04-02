@@ -1,11 +1,14 @@
 import asyncpg
 import os
 import ssl as ssl_module
+
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from dotenv import load_dotenv
 
 load_dotenv()
 
 DB_URL = f"postgresql://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}@{os.getenv('DB_HOST')}:{os.getenv('DB_PORT')}/{os.getenv('DB_NAME')}"
+DB_URL_ALCHEMY = f"postgresql+asyncpg://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}@{os.getenv('DB_HOST')}:{os.getenv('DB_PORT')}/{os.getenv('DB_NAME')}"
 
 pool: asyncpg.Pool | None = None
 
@@ -26,3 +29,10 @@ async def close_pool():
 async def get_db():
     async with pool.acquire() as conn:
         yield conn
+
+# Add connection for sqlalchemy
+engine = create_async_engine(DB_URL_ALCHEMY, echo=False)
+async_session = async_sessionmaker(engine, expire_on_commit=False)
+async def get_session():
+    async with async_session() as session:
+        yield session
