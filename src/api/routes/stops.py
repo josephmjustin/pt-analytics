@@ -3,7 +3,7 @@ Stop information endpoints (TXC data only)
 """
 from fastapi import APIRouter, HTTPException, Query, Depends, Request
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 
 from src.api.database import get_session
 from src.api.models import TxcStop, TxcRoutePatterns, TxcPatternStops
