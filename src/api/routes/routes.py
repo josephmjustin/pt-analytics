@@ -7,7 +7,7 @@ from sqlalchemy import func, literal_column, select
 from sqlalchemy.orm import selectinload
 
 from src.api.database import get_session
-from src.api.models import TxcStop, TxcRoutePatterns, TxcPatternStops
+from src.api.models import TxcRoutePatterns, TxcPatternStops
 
 class Route(BaseModel):
     model_config = ConfigDict(from_attributes=True)
