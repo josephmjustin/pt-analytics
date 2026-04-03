@@ -72,7 +72,7 @@ async def get_stop_details(stop_id: str, session=Depends(get_session)):
     stop_record = query_stop.scalar_one_or_none()
     if not stop_record:
         raise HTTPException(status_code=404, detail="Stop not found")
-    query_route = await session.execute((select(TxcRoutePatterns).where(TxcRoutePatterns.pattern_stops.any(TxcPatternStops.naptan_id == stop_id)).distinct()).order_by(TxcRoutePatterns.route_name, TxcRoutePatterns.direction))
+    query_route = await session.execute((select(TxcRoutePatterns).where(TxcRoutePatterns.route_pattern_stops.any(TxcPatternStops.naptan_id == stop_id)).distinct()).order_by(TxcRoutePatterns.route_name, TxcRoutePatterns.direction))
     route_records = query_route.scalars().all()
     stop = Stop.model_validate(stop_record)
     routes = [Route.model_validate(r) for r in route_records]

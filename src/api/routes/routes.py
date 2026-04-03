@@ -2,10 +2,15 @@
 Route information endpoints (TXC data only)
 """
 from fastapi import APIRouter, HTTPException, Query, Depends, Request
-from pydantic import BaseModel
-from src.api.database import get_db
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy import func, literal_column, select
+from sqlalchemy.orm import selectinload
+
+from src.api.database import get_session
+from src.api.models import TxcStop, TxcRoutePatterns, TxcPatternStops
 
 class Route(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     route_name: str
     operators: str
     variants: int
@@ -19,6 +24,7 @@ class PaginatedRoutes(BaseModel):
     data: list[Route]
 
 class RouteVariants(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     pattern_id: int
     operator_name: str
     direction: str | None = None
@@ -26,6 +32,7 @@ class RouteVariants(BaseModel):
     destination: str | None = None
 
 class RouteStops(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     naptan_id: str
     stop_name: str
     stop_sequence: int
@@ -49,81 +56,63 @@ async def get_all_routes(
     ),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    conn=Depends(get_db)
+    session=Depends(get_session)
 ):
-    params = []
-    where = "WHERE route_name IS NOT NULL"
-
+    base_query = select(
+        TxcRoutePatterns.route_name,
+            func.string_agg(func.distinct(TxcRoutePatterns.operator_name), literal_column("', '")).label("operators"),
+            func.count(TxcRoutePatterns.pattern_id.distinct()).label("variants")
+        ).group_by(TxcRoutePatterns.route_name)
+    
     if search:
-        where += " AND LOWER(route_name) LIKE LOWER($" + str(len(params) + 1) + ")"
-        params.append(f"%{search}%")
+        base_query = base_query.where(TxcRoutePatterns.route_name.ilike(f"%{search}%"))
+    filtered_query = base_query.order_by(TxcRoutePatterns.route_name)
+    count_query = select(func.count()).select_from(filtered_query.subquery())
+    query = filtered_query.offset(offset).limit(limit)
+    total = (await session.execute(count_query)).scalar()
 
-    total = await conn.fetchval(f"SELECT COUNT(DISTINCT route_name) FROM txc_route_patterns {where}", *params)
-
-    query = f"""
-        SELECT DISTINCT
-            route_name,
-            STRING_AGG(DISTINCT operator_name, ', ') as operators,
-            COUNT(DISTINCT pattern_id) as variants
-        FROM txc_route_patterns {where}
-        GROUP BY route_name
-        ORDER BY route_name
-        LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}
-    """
-    params.extend([limit, offset])
-
-    routes = await conn.fetch(query, *params)
-    data = [Route(**dict(r)) for r in routes]
+    routes = await session.execute(query)
+    rows = routes.mappings().all()
+    data = [Route.model_validate(row) for row in rows]
 
     base = str(request.base_url).rstrip("/")
     next_url = f"{base}/routes?limit={limit}&offset={offset + limit}" if offset + limit < total else None
     prev_url = f"{base}/routes?limit={limit}&offset={max(0, offset - limit)}" if offset > 0 else None
-
+ 
     return PaginatedRoutes(total=total, limit=limit, offset=offset, next=next_url, prev=prev_url, data=data)
 
 @router.get("/{route_name}", response_model=RouteDetails)
-async def get_route_details(route_name: str, conn=Depends(get_db)):
+async def get_route_details(route_name: str, session=Depends(get_session)):
     """Get route details with stops serving it"""
-    query_variants = """
-        SELECT DISTINCT
-            pattern_id,
-            operator_name,
-            direction,
-            origin,
-            destination
-        FROM txc_route_patterns
-        WHERE route_name = $1
-        ORDER BY operator_name, direction
-    """
-    query_stops = """
-         SELECT 
-            ps.naptan_id,
-            ts.stop_name,
-            ps.stop_sequence,
-            ts.latitude,
-            ts.longitude
-        FROM txc_pattern_stops ps
-        JOIN txc_stops ts ON ps.naptan_id = ts.naptan_id
-        WHERE ps.pattern_id = $1
-        ORDER BY ps.stop_sequence
-    """
-    variants_record = await conn.fetch(query_variants, route_name)
-    if not variants_record:
+    query_variants = select(TxcRoutePatterns).where(TxcRoutePatterns.route_name == route_name).order_by(TxcRoutePatterns.operator_name, TxcRoutePatterns.direction)
+    variants_record = await session.execute(query_variants)
+    variants = variants_record.scalars().all()
+    if not variants:
         raise HTTPException(status_code=404, detail="Route not found")
     
-    example_variant_pattern_id = variants_record[0]["pattern_id"]
-    stop_record = await conn.fetch(query_stops, example_variant_pattern_id)
+    example_variant_pattern_id = variants[0].pattern_id
+    
+    query_stops = await session.execute(select(TxcPatternStops).options(selectinload(TxcPatternStops.stop)).where(TxcPatternStops.pattern_id == example_variant_pattern_id).order_by(TxcPatternStops.stop_sequence))
+    stop_record = query_stops.scalars().all()
+
     if not stop_record:
         raise HTTPException(status_code=404, detail="Route Pattern not found")
 
-    variants = [RouteVariants(**dict(v)) for v in variants_record]
-    example_stops = [RouteStops(**dict(s)) for s in stop_record]
+    variant_details = [RouteVariants.model_validate(v) for v in variants]
+    example_stops = [RouteStops(
+        naptan_id=s.naptan_id,
+        stop_name=s.stop.stop_name,
+        latitude=s.stop.latitude,
+        longitude=s.stop.longitude,
+        stop_sequence=s.stop_sequence
+    ) for s in stop_record]
 
     return RouteDetails(
         route_name=route_name,
-        variant_count=len(variants),
-        variants=variants,
+        variant_count=len(variant_details),
+        variants=variant_details,
         stops_in_sequence=example_stops        
     )
+
 
 
