@@ -1,5 +1,6 @@
 from sqlalchemy.orm import DeclarativeBase, Mapped, relationship, mapped_column
-from sqlalchemy import Integer, String, Float, ForeignKey
+from sqlalchemy import Integer, String, Float, ForeignKey, DateTime
+from datetime import datetime
 
 class Base(DeclarativeBase):
     pass
@@ -12,6 +13,9 @@ class TxcStop(Base):
     latitude: Mapped[float] = mapped_column(Float, nullable=False)
     longitude: Mapped[float] = mapped_column(Float, nullable=False)
 
+    pattern_stops: Mapped[list["TxcPatternStops"]] = relationship(back_populates="stop")
+
+
 class TxcRoutePatterns(Base):
     __tablename__ = "txc_route_patterns"
 
@@ -22,23 +26,18 @@ class TxcRoutePatterns(Base):
     origin: Mapped[str | None] = mapped_column(String, nullable=True)
     destination: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    pattern_stops: Mapped[list["TxcPatternStops"]] = relationship(back_populates="route_patterns")
+    route_pattern_stops: Mapped[list["TxcPatternStops"]] = relationship(back_populates="route_patterns")
 
 
 class TxcPatternStops(Base):
     __tablename__ = "txc_pattern_stops"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    pattern_id: Mapped[int] = mapped_column(
-        Integer,
-        ForeignKey("txc_route_patterns.pattern_id"),
-        nullable=False
-    )
-    naptan_id: Mapped[str] = mapped_column(
-        String(20),
-        ForeignKey("txc_stops.naptan_id"),
-        nullable=False
-    )
-    stop_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    pattern_id: Mapped[int] = mapped_column(ForeignKey("txc_route_patterns.pattern_id"), primary_key=True)
+    naptan_id: Mapped[str] = mapped_column(String(20), ForeignKey("txc_stops.naptan_id"), primary_key=True)
+    stop_sequence: Mapped[int] = mapped_column(primary_key=True)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime)
 
-    route_patterns: Mapped["TxcRoutePatterns"] = relationship(back_populates="pattern_stops")
+    route_patterns: Mapped["TxcRoutePatterns"] = relationship(back_populates="route_pattern_stops")
+    stop: Mapped["TxcStop"] = relationship(back_populates="pattern_stops")
+
+
