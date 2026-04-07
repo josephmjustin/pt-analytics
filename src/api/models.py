@@ -1,5 +1,5 @@
 from sqlalchemy.orm import DeclarativeBase, Mapped, relationship, mapped_column
-from sqlalchemy import Integer, String, Float, ForeignKey, DateTime
+from sqlalchemy import Integer, String, Float, Boolean, ForeignKey, DateTime
 from datetime import datetime
 
 class Base(DeclarativeBase):
@@ -40,4 +40,20 @@ class TxcPatternStops(Base):
     route_patterns: Mapped["TxcRoutePatterns"] = relationship(back_populates="route_pattern_stops")
     stop: Mapped["TxcStop"] = relationship(back_populates="pattern_stops")
 
+class VehiclePositions(Base):
+    __tablename__ = "vehicle_positions"
 
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    vehicle_id: Mapped[str] = mapped_column(String, nullable=False)
+    latitude: Mapped[float] = mapped_column(Float, nullable=False)
+    longitude: Mapped[float] = mapped_column(Float, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    route_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    trip_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    bearing: Mapped[int] = mapped_column(Integer, nullable=True)
+    analyzed: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
+    route_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    direction: Mapped[str | None] = mapped_column(String, nullable=True)
+    operator: Mapped[str | None] = mapped_column(String, nullable=True)
+    origin: Mapped[str | None] = mapped_column(String, nullable=True)
+    destination: Mapped[str | None] = mapped_column(String, nullable=True)

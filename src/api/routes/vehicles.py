@@ -1,10 +1,14 @@
 from fastapi import APIRouter, Query, Depends, Request
-from src.api.database import get_db
-from pydantic import BaseModel
-from datetime import datetime, timedelta
+from pydantic import BaseModel, ConfigDict
+from datetime import datetime, timedelta, timezone
+from sqlalchemy import func, select
+
 from src.api.auth import verify_api_key
+from src.api.database import get_session
+from src.api.models import VehiclePositions
 
 class VehicleDetails(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     vehicle_id: str
     latitude: float
     longitude: float
@@ -35,57 +39,29 @@ async def get_live_vehicles(
     ),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    conn=Depends(get_db)
+    session=Depends(get_session)
 ):
     """Get current vehicle positions in Liverpool (last 2 minutes)"""
-    cutoff_time = datetime.now() - timedelta(minutes=2)
-    params = []
-    where = "WHERE latitude IS NOT NULL AND longitude IS NOT NULL AND operator IS NOT NULL"
-    where += " AND timestamp >= $" + str(len(params) + 1)
-    params.append(cutoff_time)
-
-    # Bounding box
-    where += " AND latitude BETWEEN $"+str(len(params)+1)+" AND $"+str(len(params)+2)
-    params.extend([53.35, 53.48])
-
-    where += " AND longitude BETWEEN $"+str(len(params)+1)+" AND $"+str(len(params)+2)
-    params.extend([-3.05, -2.85])
-
-    # Optional search filter
+    cutoff_time = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=2)
+    
+    base_query = select(VehiclePositions)
     if search:
-        where += " AND LOWER(operator) LIKE LOWER($" + str(len(params) + 1) + ")"
-        params.append(f"%{search}%")
+        base_query = base_query.where(VehiclePositions.operator.ilike(f"%{search}%"))
+    filtered_query = base_query.where(
+        VehiclePositions.latitude.is_not(None),
+        VehiclePositions.longitude.is_not(None),
+        VehiclePositions.operator.is_not(None),
+        VehiclePositions.timestamp >= cutoff_time,
+        VehiclePositions.latitude.between(53.35, 53.48),
+        VehiclePositions.longitude.between(-3.05, -2.85),
+    ).distinct(VehiclePositions.vehicle_id).order_by(VehiclePositions.vehicle_id, VehiclePositions.timestamp.desc())
+    count_query = select(func.count()).select_from(filtered_query.subquery())
+    query = filtered_query.offset(offset).limit(limit)
+    total = (await session.execute(count_query)).scalar()
 
-    total = await conn.fetchval(f"""
-        SELECT COUNT(*) FROM (
-            SELECT DISTINCT ON (vehicle_id) vehicle_id
-            FROM vehicle_positions
-            {where}
-            ORDER BY vehicle_id, timestamp DESC
-        ) sub
-    """, *params)
-
-    query = f"""
-        SELECT DISTINCT ON (vehicle_id)
-            vehicle_id,
-            latitude,
-            longitude,
-            bearing,
-            timestamp,
-            route_name,
-            direction,
-            operator,
-            origin,
-            destination
-        FROM vehicle_positions
-        {where}
-        ORDER BY vehicle_id, timestamp DESC
-        LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}
-    """
-    params.extend([limit, offset])
-
-    vehicles = await conn.fetch(query, *params)
-    data = [VehicleDetails(**dict(v)) for v in vehicles]
+    vehicles = await session.execute(query)
+    rows = vehicles.scalars().all()
+    data = [VehicleDetails.model_validate(v) for v in rows]
 
     base = str(request.base_url).rstrip("/")
     next_url = f"{base}/vehicles/live?limit={limit}&offset={offset + limit}" if offset + limit < total else None
