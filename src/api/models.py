@@ -1,5 +1,5 @@
 from sqlalchemy.orm import DeclarativeBase, Mapped, relationship, mapped_column
-from sqlalchemy import Integer, String, Float, Boolean, ForeignKey, DateTime
+from sqlalchemy import Integer, String, Float, Boolean, ForeignKey, DateTime, func
 from datetime import datetime
 
 class Base(DeclarativeBase):
@@ -57,3 +57,24 @@ class VehiclePositions(Base):
     operator: Mapped[str | None] = mapped_column(String, nullable=True)
     origin: Mapped[str | None] = mapped_column(String, nullable=True)
     destination: Mapped[str | None] = mapped_column(String, nullable=True)
+
+class DwellTimeAnalysis(Base):
+    __tablename__ = "dwell_time_analysis"
+    naptan_id: Mapped[str] = mapped_column(String, nullable=False, primary_key=True)
+    route_name: Mapped[str] = mapped_column(String, nullable=False, primary_key=True)
+    direction: Mapped[str] = mapped_column(String, nullable=False, primary_key=True)
+    operator: Mapped[str] = mapped_column(String, nullable=False, primary_key=True)
+    day_of_week: Mapped[int] = mapped_column(Integer, nullable=False, primary_key=True)
+    hour_of_day: Mapped[int] = mapped_column(Integer, nullable=False, primary_key=True)
+    avg_dwell_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stddev_dwell_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sample_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_updated: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=datetime.now)
+
+class ApiKeys(Base):
+    __tablename__ = "api_keys"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+    hashvalue: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, server_default=func.now())

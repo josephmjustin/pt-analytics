@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 
 from src.api.database import get_session
 from src.api.models import TxcStop, TxcRoutePatterns, TxcPatternStops
+from src.api.pagination import build_pagination_links
 
 class Stop(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -59,9 +60,7 @@ async def get_all_stops(
     rows = stops.scalars().all()
     data = [Stop.model_validate(row) for row in rows]
 
-    base = str(request.base_url).rstrip("/")
-    next_url = f"{base}/stops?limit={limit}&offset={offset + limit}" if offset + limit < total else None
-    prev_url = f"{base}/stops?limit={limit}&offset={max(0, offset - limit)}" if offset > 0 else None
+    next_url, prev_url = build_pagination_links(request, offset, limit, total)
 
     return PaginatedStops(total=total, limit=limit, offset=offset, next=next_url, prev=prev_url, data=data)
 

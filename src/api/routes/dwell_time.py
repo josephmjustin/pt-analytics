@@ -3,13 +3,17 @@ Dwell Time Analysis API Endpoints
 Provides demand proxy insights based on dwell time patterns
 """
 import json
-from fastapi import APIRouter, HTTPException, Query, Depends, Request, Response
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Request, Response, Query, Depends
+from pydantic import BaseModel, ConfigDict
 from typing import Generic, TypeVar, Optional, List
-from src.api.database import get_db
+from sqlalchemy import func, select, cast, Numeric
+from src.api.database import get_session
 from src.api.auth import verify_api_key
 from src.api.rate_limiter import limiter
 from src.api.redis_client import get_redis
+from src.api.models import DwellTimeAnalysis, TxcRoutePatterns, TxcStop, TxcPatternStops
+from src.api.pagination import build_pagination_links
+
 
 T = TypeVar('T')
 
@@ -22,6 +26,7 @@ class PaginatedResponse(BaseModel, Generic[T]):
     data: List[T]
 
 class DwellTimeStats(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     unique_stops: int
     unique_routes: int
     unique_operators: int
@@ -35,6 +40,7 @@ class FilterOptions(BaseModel):
     directions: list[str]
 
 class RouteDwellSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     route_name: str
     stops_with_data: int
     operators: int
@@ -42,6 +48,7 @@ class RouteDwellSummary(BaseModel):
     avg_dwell: float
 
 class RouteStopDwell(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     naptan_id: str
     stop_name: str
     latitude: float
@@ -55,6 +62,7 @@ class RouteStopDwell(BaseModel):
     sample_count: int
 
 class DwellPattern(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     route_name: str
     direction: str | None = None
     operator: str
@@ -65,6 +73,7 @@ class DwellPattern(BaseModel):
     sample_count: int
 
 class StopInfo(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     naptan_id: str
     stop_name: str
     latitude: float
@@ -76,6 +85,7 @@ class StopDwellPattern(BaseModel):
     count: int
 
 class HotspotStops(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     naptan_id: str
     stop_name: str
     latitude: float
@@ -89,6 +99,7 @@ class Hotspots(BaseModel):
     count: int  
 
 class HeatmapData(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     route_name: str
     direction: str | None = None
     operator: str | None = None
@@ -118,46 +129,37 @@ def build_cache_key(endpoint, **params):
     return key
 
 @router.get("/stats", response_model=DwellTimeStats)
-async def get_dwell_time_stats(conn=Depends(get_db)):
+async def get_dwell_time_stats(session=Depends(get_session)):
     """Get overall dwell time statistics"""
-    
-    query = """
-        SELECT 
-            COUNT(DISTINCT naptan_id) as unique_stops,
-            COUNT(DISTINCT route_name) as unique_routes,
-            COUNT(DISTINCT operator) as unique_operators,
-            SUM(sample_count) as total_samples,
-            ROUND(AVG(avg_dwell_seconds)::numeric, 1) as overall_avg_dwell,
-            ROUND(MIN(avg_dwell_seconds)::numeric, 1) as min_avg_dwell,
-            ROUND(MAX(avg_dwell_seconds)::numeric, 1) as max_avg_dwell
-        FROM dwell_time_analysis
-    """
-    
-    stats = await conn.fetchrow(query)
-    
-    return DwellTimeStats(**dict(stats))
+    query = select(
+        func.count(func.distinct(DwellTimeAnalysis.naptan_id)).label("unique_stops"),
+        func.count(func.distinct(DwellTimeAnalysis.route_name)).label("unique_routes"),
+        func.count(func.distinct(DwellTimeAnalysis.operator)).label("unique_operators"),
+        func.sum(DwellTimeAnalysis.sample_count).label("total_samples"),
+        func.round(cast(func.avg(DwellTimeAnalysis.avg_dwell_seconds), Numeric), 1).label("overall_avg_dwell"),
+        func.round(cast(func.min(DwellTimeAnalysis.avg_dwell_seconds), Numeric), 1).label("min_avg_dwell"),
+        func.round(cast(func.max(DwellTimeAnalysis.avg_dwell_seconds), Numeric), 1).label("max_avg_dwell"),
+    )
+
+    result = await session.execute(query)
+    row = result.mappings().one()
+
+    return DwellTimeStats.model_validate(row)
 
 @router.get("/filters", response_model=FilterOptions)
-async def get_filter_options(conn=Depends(get_db)):
+async def get_filter_options(session=Depends(get_session)):
     """Get available filter options for dropdowns"""
     # Get unique operators
-    query_operators = """
-        SELECT DISTINCT operator_name
-        FROM txc_route_patterns
-        ORDER BY operator_name
-    """
-    operators = [row['operator_name'] for row in await conn.fetch(query_operators)]
+    query_operators = select(TxcRoutePatterns.operator_name).distinct().order_by(TxcRoutePatterns.operator_name)
+    result = await session.execute(query_operators)
+    operators = result.scalars().all()
 
     # Get unique directions
-    query_directions = """
-        SELECT DISTINCT direction
-        FROM txc_route_patterns
-        WHERE direction IS NOT NULL
-        ORDER BY direction
-    """
-    directions = [row['direction'] for row in await conn.fetch(query_directions)]
-    
-    return FilterOptions(operators=operators, directions=directions)
+    query_directions = select(TxcRoutePatterns.direction).where(TxcRoutePatterns.direction.is_not(None)).distinct().order_by(TxcRoutePatterns.direction)
+    result = await session.execute(query_directions)
+    directions = result.scalars().all()
+
+    return FilterOptions(operators=operators, directions= directions)
 
 @router.get("/routes", response_model=PaginatedDwellRoutes, dependencies=[Depends(verify_api_key)])
 async def get_routes_with_dwell_data(
@@ -168,42 +170,52 @@ async def get_routes_with_dwell_data(
     ),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    conn=Depends(get_db)
+    session=Depends(get_session)
 ):
     """Get all routes with dwell time data available"""
-    params = []
-    where = "WHERE route_name IS NOT NULL"
+    # Base aggregated query
+    base_query = (
+        select(
+            DwellTimeAnalysis.route_name,
+            func.count(func.distinct(DwellTimeAnalysis.naptan_id)).label("stops_with_data"),
+            func.count(func.distinct(DwellTimeAnalysis.operator)).label("operators"),
+            func.sum(DwellTimeAnalysis.sample_count).label("total_samples"),
+            func.round(cast(func.avg(DwellTimeAnalysis.avg_dwell_seconds), Numeric), 1).label("avg_dwell"),
+        )
+    )
+
+    # Apply filter
     if search:
-        where += " AND LOWER(route_name) LIKE LOWER($" + str(len(params) + 1) + ")"
-        params.append(search)
+        base_query = base_query.where(
+            DwellTimeAnalysis.route_name.ilike(f"%{search}%")
+        )
 
-    query = f"""
-        SELECT 
-            route_name,
-            COUNT(DISTINCT naptan_id) as stops_with_data,
-            COUNT(DISTINCT operator) as operators,
-            SUM(sample_count) as total_samples,
-            ROUND(AVG(avg_dwell_seconds)::numeric, 1) as avg_dwell
-        FROM dwell_time_analysis
-        {where}
-        GROUP BY route_name
-        ORDER BY route_name
-        LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}
-    """
-    params.extend([limit, offset])
-    routes = await conn.fetch(query, *params)
-    total = await conn.fetchval(f"SELECT COUNT(DISTINCT route_name) FROM dwell_time_analysis {where}", *params[:-2])
+    # Group + order
+    filtered_query = base_query.group_by(DwellTimeAnalysis.route_name).order_by(
+        DwellTimeAnalysis.route_name
+    )
 
-    base = str(request.base_url).rstrip("/")
-    next_url = f"{base}/dwell-time/routes?limit={limit}&offset={offset + limit}" if offset + limit < total else None
-    prev_url = f"{base}/dwell-time/routes?limit={limit}&offset={max(0, offset - limit)}" if offset > 0 else None
+    # Pagination
+    query = filtered_query.offset(offset).limit(limit)
 
-    data = [RouteDwellSummary(**dict(route)) for route in routes]
+    # Count total groups (routes)
+    count_query = select(func.count()).select_from(filtered_query.subquery())
+    total = (await session.execute(count_query)).scalar()
+
+    # Execute main query
+    result = await session.execute(query)
+    rows = result.mappings().all()
+
+    # Unpack to data
+    data = [RouteDwellSummary.model_validate(row) for row in rows]
+
+    next_url, prev_url = build_pagination_links(request, offset, limit, total)
 
     return PaginatedDwellRoutes(total=total, limit=limit, offset=offset, next=next_url, prev=prev_url, data=data)
 
 @router.get("/route/{route_name}/stops", response_model=PaginatedRouteStopDwell, dependencies=[Depends(verify_api_key)])
 async def get_route_stops_dwell(
+    request: Request,
     route_name: str,
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
@@ -211,56 +223,70 @@ async def get_route_stops_dwell(
     operator: str | None = Query(None, description="Filter by operator, case sensitive, should match exactly (eg. Arriva, Stagecoach, ...)"),
     day_of_week: int | None = Query(None, ge=0, le=6, description="Filter by day of week (0=Monday, 6=Sunday)"),
     hour_of_day: int | None = Query(None, ge=0, le=23, description="Filter by hour of day (0-23)"),
-    conn=Depends(get_db)
+    session=Depends(get_session)
 ):
     """Get dwell time analysis for stops on a route"""
-    params = []
-    where = "WHERE dta.route_name = $" + str(len(params) + 1)
-    params.append(route_name)
+    base_query = (
+        select(
+            DwellTimeAnalysis.naptan_id,
+            DwellTimeAnalysis.direction,
+            DwellTimeAnalysis.operator,
+            DwellTimeAnalysis.day_of_week,
+            DwellTimeAnalysis.hour_of_day,
+            DwellTimeAnalysis.sample_count,
+            func.round(cast(DwellTimeAnalysis.avg_dwell_seconds, Numeric), 1).label("avg_dwell_seconds"),
+            func.round(cast(DwellTimeAnalysis.stddev_dwell_seconds, Numeric), 1).label("stddev_dwell_seconds"),
+            TxcStop.stop_name,
+            TxcStop.latitude,
+            TxcStop.longitude
+        ).join(
+            TxcStop, DwellTimeAnalysis.naptan_id == TxcStop.naptan_id
+            ).where(
+                DwellTimeAnalysis.route_name ==route_name
+                )
+    )
 
+    # Apply filters
     if direction:
-        where += " AND direction = $" + str(len(params) + 1)
-        params.append(direction)
+        base_query = base_query.where(
+            DwellTimeAnalysis.direction == direction
+        )
 
     if operator:
-        where += " AND operator = $" + str(len(params) + 1)
-        params.append(operator)
-    
-    if day_of_week is not None:
-        where += " AND day_of_week = $" + str(len(params) + 1)
-        params.append(day_of_week)
-    
-    if hour_of_day is not None:
-        where += " AND hour_of_day = $" + str(len(params) + 1)
-        params.append(hour_of_day)
-    
-    total = await conn.fetchval(f"SELECT COUNT(*) FROM dwell_time_analysis dta JOIN txc_stops ts ON dta.naptan_id = ts.naptan_id {where}", *params)
+        base_query = base_query.where(
+            DwellTimeAnalysis.operator == operator
+        )
 
-    query = f"""
-        SELECT 
-            dta.naptan_id,
-            ts.stop_name,
-            ts.latitude,
-            ts.longitude,
-            dta.direction,
-            dta.operator,
-            dta.day_of_week,
-            dta.hour_of_day,
-            ROUND(dta.avg_dwell_seconds::numeric, 1) as avg_dwell_seconds,
-            ROUND(dta.stddev_dwell_seconds::numeric, 1) as stddev_dwell_seconds,
-            dta.sample_count
-        FROM dwell_time_analysis dta
-        JOIN txc_stops ts ON dta.naptan_id = ts.naptan_id
-        {where}
-        ORDER BY dta.avg_dwell_seconds DESC
-        LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}
-    """
+    if day_of_week is not None:
+        base_query = base_query.where(
+            DwellTimeAnalysis.day_of_week == day_of_week
+        )
+
+    if hour_of_day is not None:
+        base_query = base_query.where(
+            DwellTimeAnalysis.hour_of_day == hour_of_day
+        )
     
-    params.extend([limit, offset])
-    stops = await conn.fetch(query, *params)
-    data = [RouteStopDwell(**dict(stop)) for stop in stops]
-    next_url = f"/dwell-time/route/{route_name}/stops?limit={limit}&offset={offset + limit}" if offset + limit < total else None
-    prev_url = f"/dwell-time/route/{route_name}/stops?limit={limit}&offset={max(0, offset - limit)}" if offset > 0 else None
+    # Order
+    filtered_query = base_query.order_by(
+        DwellTimeAnalysis.avg_dwell_seconds.desc()
+    )
+
+    # Pagination
+    query = filtered_query.offset(offset).limit(limit)
+
+    # Count total groups (routes)
+    count_query = select(func.count()).select_from(filtered_query.subquery())
+    total = (await session.execute(count_query)).scalar()
+
+    # Execute main query
+    result = await session.execute(query)
+    rows = result.mappings().all()
+
+    # Unpack to data
+    data = [RouteStopDwell.model_validate(row) for row in rows]
+
+    next_url, prev_url = build_pagination_links(request, offset, limit, total)
 
     return PaginatedRouteStopDwell(total=total, limit=limit, offset=offset, next=next_url, prev=prev_url, data=data)
 
@@ -268,47 +294,48 @@ async def get_route_stops_dwell(
 async def get_stop_dwell_pattern(
     naptan_id: str,
     route_name: str | None = Query(None),
-    conn=Depends(get_db)
+    session=Depends(get_session)
 ):
     """Get dwell time patterns for a specific stop across time"""
     
     # Get stop info
-    query_stop ="""
-        SELECT naptan_id, stop_name, latitude, longitude
-        FROM txc_stops
-        WHERE naptan_id = $1
-    """
-    stop_info = await conn.fetchrow(query_stop, naptan_id)
+    query_stop =select(
+        TxcStop
+    ).where(TxcStop.naptan_id == naptan_id)
+    
+    result = await session.execute(query_stop)
+    stop_info = result.scalars().one_or_none()
     
     if not stop_info:
         raise HTTPException(status_code=404, detail="Stop not found")
-    params = [naptan_id]
-    where = "WHERE naptan_id = $1"
-    if route_name:
-        where += " AND route_name = $2"
-        params.append(route_name)
-    query_route = f"""
-        SELECT 
-            route_name,
-            direction,
-            operator,
-            day_of_week,
-            hour_of_day,
-            ROUND(avg_dwell_seconds::numeric, 1) as avg_dwell_seconds,
-            ROUND(stddev_dwell_seconds::numeric, 1) as stddev_dwell_seconds,
-            sample_count
-        FROM dwell_time_analysis
-        {where}
-        ORDER BY route_name, day_of_week, hour_of_day
-    """
     
-    patterns = await conn.fetch(query_route, *params)
-    if not patterns:        
-        raise HTTPException(status_code=404, detail="No dwell time data found for this stop")
-    data = [DwellPattern(**dict(p)) for p in patterns]
+    base_query = select(
+        DwellTimeAnalysis.route_name,
+        DwellTimeAnalysis.direction,
+        DwellTimeAnalysis.operator,
+        DwellTimeAnalysis.day_of_week,
+        DwellTimeAnalysis.hour_of_day,
+        DwellTimeAnalysis.sample_count,
+        func.round(cast(DwellTimeAnalysis.avg_dwell_seconds, Numeric), 1).label("avg_dwell_seconds"),
+        func.round(cast(DwellTimeAnalysis.stddev_dwell_seconds, Numeric), 1).label("stddev_dwell_seconds")
+    ).where(DwellTimeAnalysis.naptan_id == naptan_id)
+    
+    if route_name:
+        base_query = base_query.where(DwellTimeAnalysis.route_name == route_name)
+    
+    filtered_query = base_query.order_by(DwellTimeAnalysis.route_name, DwellTimeAnalysis.day_of_week, DwellTimeAnalysis.hour_of_day)
+
+    result = await session.execute(filtered_query)
+    data = result.mappings().all()
+
+    if not data:
+        if route_name:
+            raise HTTPException(status_code=404, detail="Route not found for this stop")
+        else:
+            raise HTTPException(status_code=404, detail="No dwell time data found for this stop")
     
     return StopDwellPattern(
-        stop=StopInfo(**dict(stop_info)),
+        stop=StopInfo.model_validate(stop_info),
         patterns=data,
         count=len(data)
     )
@@ -320,37 +347,38 @@ async def get_high_demand_stops(
     response: Response,
     min_samples: int | None = Query(10, ge=1),
     limit: int | None = Query(20, ge=1, le=100),
-    conn=Depends(get_db),
+    session=Depends(get_session),
     redis = Depends(get_redis)
 ):
-    """Get stops with highest average dwell times (demand proxy)"""
-    
-    query_hotspots ="""
-        SELECT 
-            dta.naptan_id,
-            ts.stop_name,
-            ts.latitude,
-            ts.longitude,
-            COUNT(DISTINCT dta.route_name) as routes_count,
-            ROUND(AVG(dta.avg_dwell_seconds)::numeric, 1) as overall_avg_dwell,
-            SUM(dta.sample_count) as total_samples
-        FROM dwell_time_analysis dta
-        JOIN txc_stops ts ON dta.naptan_id = ts.naptan_id
-        GROUP BY dta.naptan_id, ts.stop_name, ts.latitude, ts.longitude
-        HAVING SUM(dta.sample_count) >= $1
-        ORDER BY AVG(dta.avg_dwell_seconds) DESC
-        LIMIT $2
-    """
     key = build_cache_key("hotspots", min_samples=min_samples, limit=limit)
     cached = await redis.get(key)
     if cached:
         response.headers["X-Cache"] = "HIT"
         return Hotspots(**json.loads(cached))
     else:
-        hotspots = await conn.fetch(query_hotspots, min_samples, limit)
+        """Get stops with highest average dwell times (demand proxy)"""
+        query_hotspots = select(
+            DwellTimeAnalysis.naptan_id,
+            TxcStop.stop_name,
+            TxcStop.latitude,
+            TxcStop.longitude,
+            func.count(func.distinct(DwellTimeAnalysis.route_name)).label("routes_count"),
+            func.round(cast(func.avg(DwellTimeAnalysis.avg_dwell_seconds), Numeric), 1).label("overall_avg_dwell"),
+            func.sum(DwellTimeAnalysis.sample_count).label("total_samples")
+        ).join(
+            TxcStop, DwellTimeAnalysis.naptan_id == TxcStop.naptan_id
+        ).group_by(
+            DwellTimeAnalysis.naptan_id, TxcStop.stop_name, TxcStop.latitude, TxcStop.longitude
+        ).having(
+            func.sum(DwellTimeAnalysis.sample_count) >= min_samples
+        ).order_by(func.avg(DwellTimeAnalysis.avg_dwell_seconds).desc()).limit(limit)
+
+        # Execute main query
+        hotspots = await session.execute(query_hotspots)
+        rows = hotspots.mappings().all()
         result = Hotspots(
-            hotspots=[HotspotStops(**dict(h)) for h in hotspots],
-            count=len(hotspots)
+            hotspots=rows,
+            count=len(rows)
         )
         await redis.set(key, json.dumps(result.model_dump()), ex=3600)  # Cache for 1 hour
         response.headers["X-Cache"] = "MISS"
@@ -362,7 +390,7 @@ async def get_dwell_time_heatmap(
     response: Response,
     direction: str | None = Query(None, description="Filter by direction, lowercase (outbound/ inbound)"),
     operator: str | None = Query(None, description="Full operator name as returned by /dwell-time/filters endpoint (e.g., 'Arriva Merseyside', not 'Arriva')"),
-    conn=Depends(get_db),
+    session=Depends(get_session),
     redis = Depends(get_redis)
 ):
     """Get heatmap data: stops × hours with dwell times"""
@@ -377,69 +405,64 @@ async def get_dwell_time_heatmap(
         response.headers["X-Cache"] = "HIT"
         return HeatmapData(**json.loads(cached_heatmap))
     else:
-        # Get stops on route in sequence order
-        where = "WHERE rp.route_name = $1"
-        params_stops = [route_name]
+        base_query_stops = (
+            select(
+                TxcPatternStops.naptan_id,
+                TxcStop.stop_name,
+                func.min(TxcPatternStops.stop_sequence).label("sequence"),
+            )
+            .join(TxcStop, TxcPatternStops.naptan_id == TxcStop.naptan_id)
+            .join(TxcRoutePatterns, TxcPatternStops.pattern_id == TxcRoutePatterns.pattern_id)
+            .where(TxcRoutePatterns.route_name == route_name)
+        )
+        
+        base_query_heatmap = select(
+            DwellTimeAnalysis.naptan_id,
+            DwellTimeAnalysis.hour_of_day,
+            func.round(cast(func.avg(DwellTimeAnalysis.avg_dwell_seconds), Numeric), 1).label("avg_dwell")
+        ).where(
+            DwellTimeAnalysis.route_name == route_name
+        )
         
         if direction:
-            where += " AND rp.direction = $" + str(len(params_stops) + 1)
-            params_stops.append(direction)
+            base_query_stops = base_query_stops.where(TxcRoutePatterns.direction == direction)
+            base_query_heatmap = base_query_heatmap.where(DwellTimeAnalysis.direction == direction)
         
-        if operator_txc:
-            where += " AND rp.operator_name = $" + str(len(params_stops) + 1)
-            params_stops.append(operator_txc)
+        if operator:
+            base_query_stops = base_query_stops.where(TxcRoutePatterns.operator_name == operator_txc)
+            base_query_heatmap = base_query_heatmap.where(DwellTimeAnalysis.operator == operator_dwell)
         
-        query_stops = f"""
-            SELECT DISTINCT
-                ps.naptan_id,
-                ts.stop_name,
-                MIN(ps.stop_sequence) as sequence
-            FROM txc_pattern_stops ps
-            JOIN txc_stops ts ON ps.naptan_id = ts.naptan_id
-            JOIN txc_route_patterns rp ON ps.pattern_id = rp.pattern_id
-            {where}
-            GROUP BY ps.naptan_id, ts.stop_name ORDER BY sequence
-        """
+        query_stops = base_query_stops.group_by(
+            TxcPatternStops.naptan_id, TxcStop.stop_name
+            ).order_by(
+                "sequence"
+            )
 
-        stops = await conn.fetch(query_stops, *params_stops)
+        stops = await session.execute(query_stops)
+        rows_stops = stops.mappings().all()
 
-        if not stops:
+        if not rows_stops:
             raise HTTPException(status_code=404, detail="No stops found for this route")
         
         # Get dwell time data for heatmap
-        where = "WHERE route_name = $1"
-        params_heatmap = [route_name]
-
-        if direction:
-            where += " AND direction = $" + str(len(params_heatmap) + 1)
-            params_heatmap.append(direction)
+        query_heatmap = base_query_heatmap.group_by(
+            DwellTimeAnalysis.naptan_id,
+            DwellTimeAnalysis.hour_of_day
+        )
         
-        if operator_dwell:
-            where += " AND operator = $" + str(len(params_heatmap) + 1)
-            params_heatmap.append(operator_dwell)
-        
-        query_heatmap = f"""
-            SELECT 
-                naptan_id,
-                hour_of_day,
-                ROUND(AVG(avg_dwell_seconds)::numeric, 1) as avg_dwell
-            FROM dwell_time_analysis
-            {where}
-            GROUP BY naptan_id, hour_of_day
-        """  
-    
-        heatmap_data = await conn.fetch(query_heatmap, *params_heatmap)
+        heatmap_data = await session.execute(query_heatmap)
+        rows_heatmap = heatmap_data.mappings().all()
 
         # Build matrix: stops × hours
         hours = list(range(24))
-        stop_ids = [s['naptan_id'] for s in stops]
-        stop_names = [s['stop_name'] for s in stops]
+        stop_ids = [s['naptan_id'] for s in rows_stops]
+        stop_names = [s['stop_name'] for s in rows_stops]
         
         # Initialize matrix with None
         matrix = [[None for _ in hours] for _ in stop_ids]
         
         # Fill matrix with actual data
-        for row in heatmap_data:
+        for row in rows_heatmap:
             try:
                 stop_idx = stop_ids.index(row['naptan_id'])
                 hour_idx = row['hour_of_day']
@@ -459,5 +482,3 @@ async def get_dwell_time_heatmap(
         await redis.set(key_heatmap, json.dumps(result.model_dump()), ex=3600)  # Cache heatmap data for 1 hour
         response.headers["X-Cache"] = "MISS"
         return result
-
-
